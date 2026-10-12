@@ -81,7 +81,9 @@ def detect_badge(crop, scale, short_side):
     d0 = BADGE_DIAMETER_1080P * (short_side / 1080.0) * scale
     min_area = np.pi / 4 * (0.45 * d0) ** 2
     max_area = np.pi / 4 * (1.8 * d0) ** 2
-    light = (v >= 170) & (s <= 90)  # the white-ish text inside the badge
+    # The text inside the badge: anything bright that isn't the badge's own red. Covers white
+    # "KILL", yellowish "ASSIST" and the green souls amount ("$145") added in a 2026 update.
+    light = (v >= 160) & ~(((h <= 10) | (h >= 170)) & (s >= 90))
 
     best = (0.0, -1.0, -1.0)
     for c in contours:
@@ -103,6 +105,44 @@ def detect_badge(crop, scale, short_side):
         score = min(1.0, circularity) * min(1.0, text_frac / 0.04)
         if score > best[0]:
             best = (score, x / scale, y / scale)
+    if best[0] < 0.5:
+        disk = _touching_badge(red, light, d0, min_area)
+        if disk[0] > best[0]:
+            best = (disk[0], disk[1] / scale, disk[2] / scale)
+    return best
+
+
+def _touching_badge(red, light, d0, min_area):
+    """A badge whose red merges with something red next to it (e.g. a red hat just below it):
+    the blob isn't round, but it contains a solid red disk of badge size with text in the middle."""
+    best = (0.0, -1.0, -1.0)
+    # Fill the text holes so the badge reads as one solid disk.
+    near_red = cv2.dilate(red, np.ones((9, 9), np.uint8)) > 0
+    solid = ((red > 0) | (light & near_red)).astype(np.uint8) * 255
+    solid = cv2.morphologyEx(solid, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    contours, _ = cv2.findContours(solid, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for c in contours:
+        area = cv2.contourArea(c)
+        if area < min_area:
+            continue
+        mask = np.zeros(solid.shape, np.uint8)
+        cv2.drawContours(mask, [c], -1, 255, -1)
+        dist = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+        _, r, _, (x, y) = cv2.minMaxLoc(dist)
+        if not (0.45 * d0 / 2 <= r <= 1.8 * d0 / 2):
+            continue
+        if area > 3.0 * np.pi * r * r:
+            continue  # a big red area (wall, explosion), not a badge with a neighbour
+        inner = np.zeros(solid.shape, np.uint8)
+        cv2.circle(inner, (int(x), int(y)), max(2, int(r * 0.75)), 255, -1)
+        inside = inner > 0
+        text_frac = float(light[inside].mean())
+        red_frac = float((red[inside] > 0).mean())
+        if not (0.03 <= text_frac <= 0.5) or red_frac < 0.4:
+            continue
+        score = 0.9 * min(1.0, text_frac / 0.06)
+        if score > best[0]:
+            best = (score, float(x), float(y))
     return best
 
 
