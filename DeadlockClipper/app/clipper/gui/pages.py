@@ -201,12 +201,13 @@ class SettingsPage(QWidget):
         form.addWidget(label("What counts as a highlight:"), r, 0, 1, 2); r += 1
         self.kills = QCheckBox("My kills and assists")
         self.multi = QCheckBox("Multikills")
-        self.fights = QCheckBox("Teamfights")
+        self.fights = QCheckBox("Teamfights (kills during a big fight score higher)")
+        self.loud_only = QCheckBox("Also include loud fights where no kill was seen (may pick up creep farming)")
         self.objectives = QCheckBox("Big objective moments (coming soon)")
         self.objectives.setEnabled(False)
         self.objectives.setToolTip("Needs a screenshot of a Guardian/Walker/Mid Boss going down "
                                    "to build this. Send one to Claude.")
-        for cb in (self.kills, self.multi, self.fights, self.objectives):
+        for cb in (self.kills, self.multi, self.fights, self.loud_only, self.objectives):
             form.addWidget(cb, r, 0, 1, 2); r += 1
         self.no_deaths = QCheckBox("Skip moments where I die (clips end before the death)")
         form.addWidget(self.no_deaths, r, 0, 1, 2); r += 1
@@ -265,6 +266,7 @@ class SettingsPage(QWidget):
         self.kills.setChecked(settings.want_kills)
         self.multi.setChecked(settings.want_multikills)
         self.fights.setChecked(settings.want_teamfights)
+        self.loud_only.setChecked(settings.want_loud_only)
         self.no_deaths.setChecked(settings.exclude_deaths)
         self.sens.setValue(settings.sensitivity)
         self.full.setChecked(settings.full_scan)
@@ -289,14 +291,15 @@ class SettingsPage(QWidget):
             num_clips=0 if self.all.isChecked() else self.num.value(), min_len=self.min_len.value(), max_len=self.max_len.value(),
             vertical_format="crop" if self.opt_crop.radio.isChecked() else "blur",
             want_kills=self.kills.isChecked(), want_multikills=self.multi.isChecked(),
-            want_teamfights=self.fights.isChecked(), want_objectives=False,
+            want_teamfights=self.fights.isChecked(), want_loud_only=self.loud_only.isChecked(),
+            want_objectives=False,
             exclude_deaths=self.no_deaths.isChecked(), sensitivity=self.sens.value(),
             full_scan=self.full.isChecked(), output_dir=self.out_dir.text().strip(),
         ).validate()
 
     def _start(self):
         s = self.current()
-        if not (s.want_kills or s.want_multikills or s.want_teamfights):
+        if not (s.want_kills or s.want_multikills or s.want_loud_only):
             from .common import show_error
             show_error(self, "Tick at least one kind of highlight.")
             return
@@ -419,6 +422,10 @@ class ClipRow(QFrame):
         self.clip = clip
         self.index = index
         lay = QHBoxLayout(self)
+        self.check = QCheckBox()
+        self.check.setChecked(True)
+        self.check.setToolTip("Export this clip")
+        lay.addWidget(self.check)
         self.thumb = ClickableLabel()
         self.thumb.setFixedSize(192, 108)
         self.thumb.setCursor(Qt.PointingHandCursor)
@@ -502,6 +509,17 @@ class ReviewPage(QWidget):
         tune.addStretch(1)
         lay.addLayout(tune)
 
+        pick = QHBoxLayout()
+        sel_all = button("Select all")
+        sel_none = button("Select none")
+        sel_all.clicked.connect(lambda: self._select(True))
+        sel_none.clicked.connect(lambda: self._select(False))
+        pick.addWidget(sel_all)
+        pick.addWidget(sel_none)
+        pick.addWidget(label("Only ticked clips are exported.", "subtle"))
+        pick.addStretch(1)
+        lay.addLayout(pick)
+
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.list_host = QWidget()
@@ -530,6 +548,7 @@ class ReviewPage(QWidget):
         for i, clip in enumerate(clips, 1):
             row = ClipRow(i, clip)
             row.edit.connect(self.edit.emit)
+            row.check.toggled.connect(self._update_export)
             row.delete.connect(self._delete)
             self.list.insertWidget(self.list.count() - 1, row)
             self.rows.append(row)
@@ -553,17 +572,26 @@ class ReviewPage(QWidget):
         row.deleteLater()
         self._update_export()
 
-    def _update_export(self):
-        self.export_btn.setText(f"Export {len(self.rows)} clip{'s' if len(self.rows) != 1 else ''}")
-        self.export_btn.setEnabled(bool(self.rows))
+    def _select(self, on):
+        for row in self.rows:
+            row.check.setChecked(on)
+
+    def _checked(self):
+        return [r for r in self.rows if r.check.isChecked()]
+
+    def _update_export(self, *_):
+        n = len(self._checked())
+        self.export_btn.setText(f"Export {n} of {len(self.rows)} clip{'s' if len(self.rows) != 1 else ''}")
+        self.export_btn.setEnabled(n > 0)
 
     def _export(self):
-        bad = [r.index for r in self.rows if not r.valid()]
+        rows = self._checked()
+        bad = [r.index for r in rows if not r.valid()]
         if bad:
             from .common import show_error
             show_error(self, f"Clip {', '.join(map(str, bad))} must be between 3 and 60 seconds long.")
             return
-        self.export.emit([r.clip for r in self.rows])
+        self.export.emit([r.clip for r in rows])
 
 
 # ---------------------------------------------------------------- Done

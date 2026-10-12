@@ -16,6 +16,7 @@ class Settings:
     want_kills: bool = True
     want_multikills: bool = True
     want_teamfights: bool = True
+    want_loud_only: bool = False  # loud fights with no kill badge (can include creep farming)
     want_objectives: bool = False
     exclude_deaths: bool = True
     output_dir: str = ""

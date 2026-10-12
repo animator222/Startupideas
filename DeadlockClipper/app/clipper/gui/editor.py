@@ -7,7 +7,7 @@ from PySide6.QtGui import QBrush, QColor, QKeySequence, QPainter, QPen, QPixmap,
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QGraphicsVideoItem
 from PySide6.QtWidgets import (
-    QButtonGroup, QGraphicsObject, QGraphicsScene, QGraphicsView, QHBoxLayout, QPushButton, QRadioButton,
+    QButtonGroup, QDialog, QGraphicsObject, QGraphicsScene, QGraphicsView, QHBoxLayout, QPushButton, QRadioButton,
     QSizePolicy, QVBoxLayout, QWidget,
 )
 
@@ -239,12 +239,14 @@ class Timeline(QWidget):
 
 # ---------------------------------------------------------------- editor page
 
-class EditorPage(QWidget):
+class EditorDialog(QDialog):
+    """Opens in its own window. Closing it (X, Esc or Cancel) just discards the changes."""
     saved = Signal(object)  # the clip
-    closed = Signal()
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setModal(True)
+        self.resize(1150, 800)
         self.info = None
         self.clip = None
         self.stop_at = None
@@ -366,6 +368,7 @@ class EditorPage(QWidget):
         self.info, self.clip = info, clip
         self.s0, self.s1 = clip.start, clip.end
         self.title.setText(f"Edit clip {index}")
+        self.setWindowTitle(f"Edit clip {index} - close this window to cancel")
         self.reasons.setText(" • ".join(clip.reasons))
         self.view.set_frame_size(info.width, info.height)
         self.view.overlay.crop_x = clip.crop_x
@@ -388,8 +391,11 @@ class EditorPage(QWidget):
         self.player.setSource(QUrl())
 
     def _cancel(self):
-        self.stop()
-        self.closed.emit()
+        self.reject()
+
+    def done(self, result):
+        self.stop()  # stop sound whichever way the window is closed
+        super().done(result)
 
     def _save(self):
         self.clip.start, self.clip.end = round(self.s0, 2), round(self.s1, 2)
@@ -399,8 +405,8 @@ class EditorPage(QWidget):
             self.clip.focus = (self.clip.start + self.clip.end) / 2
         log.info("Clip edited: %.2f-%.2f fmt=%s crop_x=%.2f", self.clip.start, self.clip.end,
                  self.clip.fmt, self.clip.crop_x)
-        self.stop()
         self.saved.emit(self.clip)
+        self.accept()
 
     # ------------------------------------------------------------ playback
 

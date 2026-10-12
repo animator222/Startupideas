@@ -2,7 +2,7 @@
 import logging
 from dataclasses import replace
 
-from PySide6.QtWidgets import QMainWindow, QStackedWidget
+from PySide6.QtWidgets import QMainWindow, QMessageBox, QStackedWidget
 
 from .. import APP_NAME, APP_VERSION
 from ..analysis import analyze, write_report
@@ -14,7 +14,7 @@ from ..paths import CACHE_DIR
 from ..settings import load_settings, save_settings
 from ..youtube import download
 from .common import show_error, start_task
-from .editor import EditorPage
+from .editor import EditorDialog
 from .pages import DonePage, HomePage, ProgressPage, ReviewPage, SettingsPage
 
 log = logging.getLogger(__name__)
@@ -34,8 +34,9 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.setCentralWidget(self.stack)
         self.home, self.setup, self.progress = HomePage(), SettingsPage(), ProgressPage()
-        self.review, self.done, self.editor = ReviewPage(), DonePage(), EditorPage()
-        for page in (self.home, self.setup, self.progress, self.review, self.done, self.editor):
+        self.review, self.done = ReviewPage(), DonePage()
+        self.editor = EditorDialog(self)
+        for page in (self.home, self.setup, self.progress, self.review, self.done):
             self.stack.addWidget(page)
 
         self.home.file_chosen.connect(self.open_file)
@@ -46,7 +47,6 @@ class MainWindow(QMainWindow):
         self.review.repick.connect(self.repick)
         self.review.edit.connect(self.edit_clip)
         self.editor.saved.connect(self._clip_saved)
-        self.editor.closed.connect(lambda: self.stack.setCurrentWidget(self.review))
         self.review.export.connect(self.run_export)
         self.review.back.connect(self.go_home)
         self.done.again.connect(self.go_home)
@@ -159,12 +159,12 @@ class MainWindow(QMainWindow):
     def edit_clip(self, row):
         self._editing = row
         self.editor.open(self.info, row.clip, row.index, self.settings.vertical_format)
-        self.stack.setCurrentWidget(self.editor)
+        self.editor.show()
+        self.editor.raise_()
 
     def _clip_saved(self, clip):
         row = self._editing
         row.refresh()
-        self.stack.setCurrentWidget(self.review)
         info = self.info
         start_task(self, lambda progress, cancel: extract_frame(
             info.path, clip.focus + 0.5, CACHE_DIR / "thumbs" / f"edited_{id(clip)}.jpg", width=384),
@@ -185,6 +185,13 @@ class MainWindow(QMainWindow):
         self._run("Exporting clips", work, done, self.review)
 
     def closeEvent(self, event):
+        on_review = self.stack.currentWidget() is self.review and self.review.rows
+        if on_review and QMessageBox.question(
+                self, "Quit Deadlock Clipper?",
+                "Quit the app? Clips you haven't exported yet will be lost.\n"
+                "(The scan is saved, so reopening the same video is quick.)") != QMessageBox.Yes:
+            event.ignore()
+            return
         if self.task:
             self.task.cancel()
         self.editor.stop()

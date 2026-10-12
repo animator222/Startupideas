@@ -193,7 +193,7 @@ def _candidates(events, settings):
             reasons.append("Kill lines up with an audio spike")
         cands.append(Clip(start, end, score, reasons, list(group), focus=first))
 
-    if s.want_teamfights:
+    if s.want_loud_only:
         for f in events.fights:
             if id(f) in used_fights or f.length < TEAMFIGHT_MIN_SECONDS:
                 continue

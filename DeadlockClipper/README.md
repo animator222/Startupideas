@@ -28,7 +28,8 @@ To update or repair the app, download the new ZIP, extract it over the old folde
 3. **Find highlights.** A 1-2 hour video takes a few minutes. Going back to the same video later
    is instant because the scan is saved.
 4. **Review.** Each suggested clip shows a thumbnail, its time, a score and *why* it was picked.
-   - **Play / Edit** (or click the thumbnail) opens the editor:
+   - **Play / Edit** (or click the thumbnail) opens the editor in its own window. Closing that
+     window (X, Esc or Cancel) just discards your changes; the app stays open.
      - The video plays at the top, with **play/pause**, **5 s back/forward** and **frame-by-frame** buttons.
      - The **timeline** at the bottom shows the clip as a yellow box. Drag its left or right edge
        to trim, or click anywhere on the timeline to jump there.
@@ -37,7 +38,8 @@ To update or repair the app, download the new ZIP, extract it over the old folde
      - Choose **blurred background** or **center crop** for each clip. With center crop, drag the
        box on the video to choose which part of the screen is kept.
      - Keyboard: Space = play/pause, arrow keys = 1 second, Shift+arrows = one frame.
-   - **Delete** removes clips you don't want.
+   - Tick the clips you want to export (**Select all** / **Select none** help). Only ticked clips
+     are exported. **Delete** removes a clip from the list.
    - Move **Fight sensitivity** and press **Re-pick clips** to get a different selection
      without re-scanning.
 5. **Export.** Clips are saved as `deadlock_2026-09-25_clip01.mp4` and so on (the date comes from
@@ -52,6 +54,10 @@ To update or repair the app, download the new ZIP, extract it over the old folde
 | Teamfight | A kill badge during at least 5 seconds of loud game audio |
 | Your death | The screen turning grey (death screen) |
 | Creep farming | Ignored: loud, but no badge |
+
+By default **only moments with your kill/assist badge** become clips. Tick *Also include loud
+fights where no kill was seen* if you also want big fights you weren't credited in (this can
+pick up creep farming).
 
 Loudness is compared with how loud *that* match normally is, so farming noise doesn't count
 as a fight. By default only the louder parts of the video are scanned for kill badges, which

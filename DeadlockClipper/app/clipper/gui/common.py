@@ -1,5 +1,6 @@
 """Background tasks, error dialogs and styling shared by all screens."""
 import logging
+from pathlib import Path
 import threading
 import time
 import traceback
@@ -32,7 +33,14 @@ QProgressBar { border: 1px solid #3a3e4a; border-radius: 6px; text-align: center
 QProgressBar::chunk { background: #d9452b; border-radius: 5px; }
 QScrollArea { border: none; }
 QCheckBox, QRadioButton { spacing: 8px; background: transparent; }
+QCheckBox::indicator { width: 18px; height: 18px; border: 2px solid #6b7080; border-radius: 4px; background: #1e2027; }
+QCheckBox::indicator:hover, QRadioButton::indicator:hover { border-color: #d9452b; }
+QCheckBox::indicator:checked { background: #d9452b; border-color: #d9452b; image: url("CHECK_SVG"); }
+QCheckBox::indicator:disabled { border-color: #3a3e4a; background: #15171c; }
+QRadioButton::indicator { width: 14px; height: 14px; border: 2px solid #6b7080; border-radius: 9px; background: #1e2027; }
+QRadioButton::indicator:checked { border-color: #d9452b; background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5, stop:0 #d9452b, stop:0.55 #d9452b, stop:0.65 #1e2027, stop:1 #1e2027); }
 """
+STYLE = STYLE.replace("CHECK_SVG", str(Path(__file__).with_name("check.svg")).replace("\\", "/"))
 
 
 def show_error(parent, message, details=""):
