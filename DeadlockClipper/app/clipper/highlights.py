@@ -188,7 +188,16 @@ def _action_bounds(events, first, last, settings, duration):
     """
     s = settings
     curve = events.sustained
-    level = max(1.0, 0.5 * events.threshold)  # dB above the match's normal level = "action"
+    # "Action" = at least halfway between this video's normal loudness and the loudness of the
+    # fight around the kill. Relative to each fight, so it works for loud and for heavily
+    # compressed audio (YouTube downloads) alike.
+    i0, i1 = max(0, int((first - 3) / HOP)), min(len(curve), int((last + 3) / HOP) + 1)
+    if i1 <= i0:
+        return first - s.pre_roll, last + s.post_roll
+    normal, peak = float(np.median(curve)), float(curve[i0:i1].max())
+    if peak - normal < 0.3:  # the kill isn't audibly louder: nothing to go on
+        return first - s.pre_roll, last + s.post_roll
+    level = normal + 0.5 * (peak - normal)
     active = lambda t: 0 <= int(t / HOP) < len(curve) and curve[int(t / HOP)] > level  # noqa: E731
     budget = s.max_len - (last - first) - s.post_roll - 1.0
     start = first - s.pre_roll
@@ -238,6 +247,7 @@ def _candidates(events, settings, duration):
             reasons.append(f"{n} kills/assists in this clip")
 
         start, end = _action_bounds(events, first, last, s, duration)
+        action = end - start
         fight = _overlapping_fight(events.fights, first - 3, last + 3)
         if fight is not None:
             used_fights.add(id(fight))
@@ -251,6 +261,8 @@ def _candidates(events, settings, duration):
         if aligned:
             score *= min(1.6, 1 + 0.15 * aligned)
             reasons.append("Kill lines up with an audio spike")
+        reasons.append(f"Fight about {action:.0f}s" + (f" (padded to your {s.min_len}s minimum)"
+                                                         if action < s.min_len else ""))
         cands.append(Clip(start, end, score, reasons, list(group), focus=first))
 
     if s.want_loud_only:

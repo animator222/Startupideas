@@ -10,6 +10,7 @@ import logging
 import os
 import subprocess
 import threading
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 import cv2
@@ -70,20 +71,87 @@ def panel_fraction(crop):
     return float(((s < 70) & (v > 120) & (v < 235)).mean())
 
 
+def _redness(bgr):
+    b, g, r = (bgr[..., i].astype(np.float32) for i in range(3))
+    return np.clip(r - np.maximum(g, b), 0, 255) / 255.0
+
+
+_TEMPLATES = [cv2.imread(str(Path(__file__).with_name("badge_templates") / f"{n}.png"), cv2.IMREAD_GRAYSCALE)
+              .astype(np.float32) / 255.0 for n in ("assist", "kill")]
+TEMPLATE_DIAM = 64  # badge diameter in the template images
+TEMPLATE_SCALES = (0.6, 0.75, 0.9, 1.05, 1.2)  # badge size relative to the expected size
+# Measured on 120 hand-labelled frames of the user's footage (49 real badges, 71 look-alikes:
+# red-tinted screens, ENEMY SHRINE bars, hero icons, explosions): 0 false hits.
+MATCH_MIN, RING_MIN, TEXT_RANGE = 0.65, 0.6, (0.05, 0.45)
+
+
+def _template_badge(crop, d0):
+    """The current (2026) badge: a red splash ring with KILL/ASSIST and the souls amount inside.
+    Template matching on 'redness' finds the shape; the red ring and the text inside confirm it."""
+    # Search at half resolution (4x faster); the badge is still ~30+ px there.
+    small = cv2.resize(crop, (crop.shape[1] // 2, crop.shape[0] // 2), interpolation=cv2.INTER_AREA)
+    red_map = _redness(small)
+    best = (-1.0, 0, 0, 0.0)
+    for k in TEMPLATE_SCALES:
+        diam = d0 * k / 2
+        sized = [cv2.resize(t, None, fx=diam / TEMPLATE_DIAM, fy=diam / TEMPLATE_DIAM, interpolation=cv2.INTER_AREA)
+                 for t in _TEMPLATES]
+        th, tw = sized[0].shape
+        if th < 8 or th >= red_map.shape[0] or tw >= red_map.shape[1]:
+            continue
+        # Flat areas give meaningless scores: ignore places with almost no variation.
+        mean = cv2.blur(red_map, (tw, th))
+        std = np.sqrt(np.maximum(cv2.blur(red_map * red_map, (tw, th)) - mean * mean, 0))
+        for tt in sized:
+            th2, tw2 = tt.shape
+            res = cv2.matchTemplate(red_map, tt, cv2.TM_CCOEFF_NORMED)
+            sd = std[th2 // 2:th2 // 2 + res.shape[0], tw2 // 2:tw2 // 2 + res.shape[1]]
+            res = res[:sd.shape[0], :sd.shape[1]]
+            res = np.where(sd > 0.06, np.nan_to_num(res, nan=-1.0), -1.0)
+            _, mx, _, loc = cv2.minMaxLoc(res)
+            if mx > best[0]:
+                best = (mx, (loc[0] + tw2 / 2) * 2, (loc[1] + th2 / 2) * 2, diam * 2)
+    match, x, y, diam = best
+    if match < 0.3:
+        return (max(0.0, match) * 0.5, -1.0, -1.0)
+
+    # Confirm: a red ring around the centre, and text (bright, not red) inside it.
+    x0, x1 = int(max(0, x - diam)), int(min(crop.shape[1], x + diam))
+    y0, y1 = int(max(0, y - diam)), int(min(crop.shape[0], y + diam))
+    hsv = cv2.cvtColor(crop[y0:y1, x0:x1], cv2.COLOR_BGR2HSV)
+    H, S, V = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+    red = ((H <= 10) | (H >= 170)) & (S >= 100) & (V >= 60)
+    text = (V >= 150) & ~(((H <= 10) | (H >= 170)) & (S >= 90))
+    yy, xx = np.mgrid[y0:y1, x0:x1]
+    r = np.hypot(xx - x, yy - y)
+    ring_red, inner_text = 0.0, 0.0
+    for k in TEMPLATE_SCALES:  # the exact size is unknown: use the one with the clearest ring
+        dd = d0 * k
+        ring = (r > 0.32 * dd) & (r <= 0.5 * dd)
+        inner = r <= 0.32 * dd
+        if ring.any() and inner.any() and red[ring].mean() > ring_red:
+            ring_red, inner_text = float(red[ring].mean()), float(text[inner].mean())
+    ok = match >= MATCH_MIN and ring_red >= RING_MIN and TEXT_RANGE[0] <= inner_text <= TEXT_RANGE[1]
+    score = 0.5 + 0.5 * min(1.0, (match - MATCH_MIN) / 0.3) if ok else min(0.45, match * 0.5)
+    return (score, x, y)
+
+
 def detect_badge(crop, scale, short_side):
-    """Score (0..1) how much the crop looks like the red kill badge, plus its centre."""
+    """Score (0..1, >= 0.5 counts) how much the crop shows the red kill/assist badge, plus its
+    centre. Two checks: the current badge (template match), and the older plain red circle with
+    white KILL / KILL ASSIST text (for older recordings)."""
+    d0 = BADGE_DIAMETER_1080P * (short_side / 1080.0) * scale
+    best = _template_badge(crop, d0)
+    best = (best[0], best[1] / scale, best[2] / scale) if best[1] >= 0 else best
+
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
     h, s, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]
     red = (((h <= 10) | (h >= 170)) & (s >= 110) & (v >= 80)).astype(np.uint8) * 255
     red = cv2.morphologyEx(red, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
     contours, _ = cv2.findContours(red, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    d0 = BADGE_DIAMETER_1080P * (short_side / 1080.0) * scale
     min_area = np.pi / 4 * (0.45 * d0) ** 2
     max_area = np.pi / 4 * (1.8 * d0) ** 2
     light = (v >= 170) & (s <= 90)  # the white text inside the older badge
-
-    best = (0.0, -1.0, -1.0)
     for c in contours:
         area = cv2.contourArea(c)
         if not (min_area <= area <= max_area):
@@ -91,8 +159,7 @@ def detect_badge(crop, scale, short_side):
         (x, y), r = cv2.minEnclosingCircle(c)
         circularity = area / (np.pi * r * r + 1e-6)
         bx, by, bw, bh = cv2.boundingRect(c)
-        aspect = bw / max(1, bh)
-        if circularity < 0.55 or not (0.65 <= aspect <= 1.5):
+        if circularity < 0.55 or not (0.65 <= bw / max(1, bh) <= 1.5):
             continue
         mask = np.zeros(red.shape, np.uint8)
         cv2.drawContours(mask, [c], -1, 255, -1)
@@ -103,83 +170,6 @@ def detect_badge(crop, scale, short_side):
         score = min(1.0, circularity) * min(1.0, text_frac / 0.04)
         if score > best[0]:
             best = (score, x / scale, y / scale)
-    # In vertical layouts the gameplay (and so the badge) is often shrunk to fit the width,
-    # so the badge can be about half its normal size: try smaller sizes too.
-    souls = max((_souls_badge(hsv, d0 * k) for k in (1.0, 0.75, 0.55)), key=lambda f: f[0])
-    for found in (souls, _touching_badge(red, light, d0, min_area) if best[0] < 0.5 else (0, -1, -1)):
-        if found[0] > best[0]:
-            best = (found[0], found[1] / scale, found[2] / scale)
-    return best
-
-
-def _souls_badge(hsv, d):
-    """The current (2026) badge: a red splash with KILL/ASSIST and, below the centre, the souls
-    you earned in mint-green ("$186"). Mint-green text of that size, surrounded by red on all
-    sides, is very particular to this badge. Measured on the user's real screenshots."""
-    H, S, V = hsv[..., 0], hsv[..., 1], hsv[..., 2]
-    mint = (H >= 35) & (H <= 100) & (S >= 40) & (V >= 140)
-    white = (S <= 70) & (V >= 170)  # heavy compression (e.g. YouTube downloads) washes the mint out
-    green = (mint | white).astype(np.uint8)
-    red = ((H <= 10) | (H >= 170)) & (S >= 100) & (V >= 60)
-    merged = cv2.dilate(green, np.ones((3, max(3, int(d * 0.08))), np.uint8))  # join the digits
-    n, _, stats, _ = cv2.connectedComponentsWithStats(merged)
-    rows, cols = red.shape
-    best = (0.0, -1.0, -1.0)
-    for x, y, w, h, _ in stats[1:n]:
-        # Real souls text: about 0.42 x 0.13 of the badge size, about a third filled.
-        if not (0.30 * d <= w <= 0.62 * d and 0.08 * d <= h <= 0.22 * d):
-            continue
-        density = float(green[y:y + h, x:x + w].mean())
-        if not (0.22 <= density <= 0.55):
-            continue
-        cx, cy = x + w / 2, y + h / 2
-
-        def red_share(x0, x1, y0, y1):
-            x0, x1 = int(max(0, cx + x0 * d)), int(min(cols, cx + x1 * d))
-            y0, y1 = int(max(0, cy + y0 * d)), int(min(rows, cy + y1 * d))
-            return float(red[y0:y1, x0:x1].mean()) if x1 > x0 and y1 > y0 else 0.0
-
-        around = sorted((red_share(-0.6, -0.3, -0.4, 0.15), red_share(0.3, 0.6, -0.4, 0.15),
-                         red_share(-0.3, 0.3, -0.62, -0.38), red_share(-0.3, 0.3, 0.12, 0.35)))
-        if around[0] < 0.08 or around[1] < 0.25:
-            continue
-        score = min(1.0, 0.55 + around[1])
-        if score > best[0]:
-            best = (score, cx, cy - 0.12 * d)  # the badge's centre is just above the souls text
-    return best
-
-
-def _touching_badge(red, light, d0, min_area):
-    """A badge whose red merges with something red next to it (e.g. a red hat just below it):
-    the blob isn't round, but it contains a solid red disk of badge size with text in the middle."""
-    best = (0.0, -1.0, -1.0)
-    # Fill the text holes so the badge reads as one solid disk.
-    near_red = cv2.dilate(red, np.ones((9, 9), np.uint8)) > 0
-    solid = ((red > 0) | (light & near_red)).astype(np.uint8) * 255
-    solid = cv2.morphologyEx(solid, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
-    contours, _ = cv2.findContours(solid, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    for c in contours:
-        area = cv2.contourArea(c)
-        if area < min_area:
-            continue
-        mask = np.zeros(solid.shape, np.uint8)
-        cv2.drawContours(mask, [c], -1, 255, -1)
-        dist = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
-        _, r, _, (x, y) = cv2.minMaxLoc(dist)
-        if not (0.45 * d0 / 2 <= r <= 1.8 * d0 / 2):
-            continue
-        if area > 3.0 * np.pi * r * r:
-            continue  # a big red area (wall, explosion), not a badge with a neighbour
-        inner = np.zeros(solid.shape, np.uint8)
-        cv2.circle(inner, (int(x), int(y)), max(2, int(r * 0.75)), 255, -1)
-        inside = inner > 0
-        text_frac = float(light[inside].mean())
-        red_frac = float((red[inside] > 0).mean())
-        if not (0.03 <= text_frac <= 0.5) or red_frac < 0.4:
-            continue
-        score = 0.9 * min(1.0, text_frac / 0.06)
-        if score > best[0]:
-            best = (score, float(x), float(y))
     return best
 
 

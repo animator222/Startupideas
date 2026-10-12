@@ -72,17 +72,18 @@ top-right of the start screen. If something is broken, run `Install.bat` again t
 
 | What | How it's detected |
 |---|---|
-| Your kill or assist | The red **KILL / ASSIST** badge that pops up above your crosshair - the current badge is found by the mint-green souls amount ("$186") inside it, older badges by their white text |
+| Your kill or assist | The red **KILL / ASSIST** badge that pops up above your crosshair - recognised by its shape (matched against real badges), its red ring and the text inside; older white-text badges are recognised too |
 | Multikill | Two or more badges within 12 seconds |
 | Teamfight | A kill badge during at least 5 seconds of loud game audio |
 | Your death | The screen turning grey (death screen) |
 | Creep farming | Ignored: loud, but no badge |
 | Buy menu | Ignored: the shop's pale panel is recognised, and badges within 4 seconds of an open shop don't count (some shop icons are red with white symbols, like the kill badge) |
 
-**Clip length follows the action.** Each clip starts when the fight starts (the game audio
-picks up before your kill) and ends when it calms down after your last kill. Kills up to about
-20 seconds apart go into one clip. Your *Clip length* setting is the allowed range: quick
-pick-offs are padded up to the minimum, and long fights are cut to the maximum.
+**Clip length follows the action.** Each clip starts when the fight around your kill starts and
+ends when it calms down, judged by how loud that fight is compared with the rest of the video.
+Kills up to about 20 seconds apart go into one clip. Your *Clip length* setting is the allowed
+range: short fights are padded up to the minimum, long ones cut to the maximum. Each clip's
+reason line says how long the fight was (e.g. "Fight about 8s (padded to your 30s minimum)").
 
 By default **only moments with your kill/assist badge** become clips. Tick *Also include loud
 fights where no kill was seen* if you also want big fights you weren't credited in (this can
