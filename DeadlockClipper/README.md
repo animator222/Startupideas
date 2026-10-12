@@ -62,6 +62,7 @@ top-right of the start screen. If something is broken, run `Install.bat` again t
 | Teamfight | A kill badge during at least 5 seconds of loud game audio |
 | Your death | The screen turning grey (death screen) |
 | Creep farming | Ignored: loud, but no badge |
+| Buy menu | Ignored: the shop's pale panel is recognised, and badges within 4 seconds of an open shop don't count (some shop icons are red with white symbols, like the kill badge) |
 
 By default **only moments with your kill/assist badge** become clips. Tick *Also include loud
 fights where no kill was seen* if you also want big fights you weren't credited in (this can

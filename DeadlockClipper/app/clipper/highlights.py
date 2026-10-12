@@ -9,12 +9,13 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .audio import HOP, intensity
-from .vision import SAMPLE_FPS
+from .vision import MENU_PANEL, SAMPLE_FPS
 
 log = logging.getLogger(__name__)
 
 BADGE_THRESHOLD = 0.5
 MULTIKILL_GAP = 12.0  # takedowns this close together form one moment
+MENU_PAD = 4.0  # ignore badges this many seconds before/after the buy menu is seen open
 TEAMFIGHT_MIN_SECONDS = 5.0
 
 
@@ -67,6 +68,9 @@ def _runs(mask):
 
 def find_takedowns(vision):
     t, score, bx, by = vision["t"], vision["badge"], vision["bx"], vision["by"]
+    # Times the buy menu is open. Tooltips can hide part of the menu panel for a moment,
+    # so badges a few seconds either side of a clearly open menu are ignored too.
+    menu_times = t[vision["panel"] >= MENU_PANEL] if "panel" in vision else t[:0]
     seen = score >= BADGE_THRESHOLD
     # Bridge flickers: the badge can be missed for a frame or two (explosions, overlap).
     for a, b in _runs(~seen):
@@ -85,7 +89,12 @@ def find_takedowns(vision):
         hit = score[a:b] >= BADGE_THRESHOLD
         if np.ptp(bx[a:b][hit]) > 60 or np.ptp(by[a:b][hit]) > 60:
             continue  # the badge stays in place; moving red things are not it
+        lo, hi = np.searchsorted(menu_times, [t[a] - MENU_PAD, t[b - 1] + MENU_PAD])
+        if hi > lo:
+            log.debug("Ignored badge at %.1fs: buy menu open", t[a])
+            continue
         found.append(float(t[a]))
+    log.info("Buy menu seen open in %d sampled frames", len(menu_times))
     return found
 
 

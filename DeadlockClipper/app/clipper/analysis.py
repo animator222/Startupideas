@@ -16,7 +16,7 @@ from .paths import ANALYSIS_REPORT, CACHE_DIR, LOG_DIR
 
 log = logging.getLogger(__name__)
 
-ANALYSIS_VERSION = 2  # bumped: v1 skipped quiet parts of the match by default
+ANALYSIS_VERSION = 3  # v2: scan whole match by default; v3: buy-menu measurement added
 SMART_SCAN_PERCENTILE = 60  # video is scanned wherever the audio is above this loudness
 SCAN_PAD_BEFORE, SCAN_PAD_AFTER = 10.0, 12.0
 
@@ -35,7 +35,7 @@ def _load_cache(key):
     try:
         data = np.load(path)
         return {"audio_db": data["audio_db"],
-                "vision": {k: data[f"v_{k}"] for k in ("t", "badge", "bx", "by", "sat", "val")},
+                "vision": {k: data[f"v_{k}"] for k in ("t", "badge", "bx", "by", "sat", "val", "panel")},
                 "segments": data["segments"].tolist()}
     except Exception:
         log.exception("Ignoring unreadable cache file %s", path)

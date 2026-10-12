@@ -30,6 +30,11 @@ DEFAULT_REGION_LANDSCAPE = (0.35, 0.12, 0.30, 0.33)
 DEFAULT_REGION_PORTRAIT = (0.28, 0.25, 0.67, 0.25)
 BADGE_DIAMETER_1080P = 115  # rough badge size in pixels when the frame's short side is 1080
 CROP_W = 384
+# The buy menu covers the badge area with a pale beige/grey panel full of item cards, and some
+# item icons are red with white symbols - just like the kill badge. Frames where at least this
+# much of the badge area is pale panel are treated as "menu open" (measured on the user's
+# footage: open shop 0.18-0.42, real kills at most 0.16).
+MENU_PANEL = 0.18
 THUMB_W, THUMB_H = 160, 90
 
 
@@ -56,6 +61,13 @@ def _filter(info, region):
             f"[a]crop={cw}:{ch}:{cx}:{cy},scale={CROP_W}:{crop_h}[c];"
             f"[b]scale={THUMB_W}:{THUMB_H},pad={CROP_W}:{THUMB_H}[d];"
             f"[c][d]vstack=2,format=bgr24[out]")
+
+
+def panel_fraction(crop):
+    """How much of the image is pale, washed-out UI panel (the buy menu)."""
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    s, v = hsv[..., 1], hsv[..., 2]
+    return float(((s < 70) & (v > 120) & (v < 235)).mean())
 
 
 def detect_badge(crop, scale, short_side):
@@ -125,10 +137,11 @@ def _scan_chunk(info, region, start, end, use_hwaccel, cancel, on_frame):
             img = np.frombuffer(buf, np.uint8).reshape(frame_h, CROP_W, 3)
             t = start + len(rows) / SAMPLE_FPS
             score, bx, by = detect_badge(img[:crop_h], scale, min(info.width, info.height))
+            panel = panel_fraction(img[:crop_h])
             hsv = cv2.cvtColor(img[crop_h:, :THUMB_W], cv2.COLOR_BGR2HSV)
             rows.append((t, score, cx + bx if bx >= 0 else -1, cy + by if by >= 0 else -1,
-                         float(hsv[..., 1].mean()), float(hsv[..., 2].mean())))
-            if score >= SAVE_SCORE:
+                         float(hsv[..., 1].mean()), float(hsv[..., 2].mean()), panel))
+            if score >= SAVE_SCORE and panel < MENU_PANEL:
                 small = img[:crop_h:2, ::2].copy()
                 if crops and t - crops[-1][0] <= 2.5:
                     if score > crops[-1][1]:  # keep the clearest frame of each pop-up
@@ -215,8 +228,8 @@ def scan_segments(info, segments, progress, cancel, region):
             raise
 
     rows.sort(key=lambda r: r[0])
-    arr = np.asarray(rows, dtype=np.float32).reshape(-1, 6)
+    arr = np.asarray(rows, dtype=np.float32).reshape(-1, 7)
     log.info("Vision scan: %d frames sampled, %d with a badge-like shape",
              len(arr), int((arr[:, 1] >= 0.5).sum()))
     return {"t": arr[:, 0], "badge": arr[:, 1], "bx": arr[:, 2], "by": arr[:, 3],
-            "sat": arr[:, 4], "val": arr[:, 5]}, crops
+            "sat": arr[:, 4], "val": arr[:, 5], "panel": arr[:, 6]}, crops
