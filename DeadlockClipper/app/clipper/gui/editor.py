@@ -437,6 +437,7 @@ class EditorDialog(QDialog):
         self.timeline = Timeline()
         self.timeline.seek.connect(self.seek)
         self.timeline.trimmed.connect(self._trimmed)
+        self.timeline.view_changed.connect(self._set_view)
         lay.addWidget(self.timeline)
 
         trim = QHBoxLayout()
@@ -450,7 +451,7 @@ class EditorDialog(QDialog):
         trim.addWidget(self.set_out)
         trim.addStretch(1)
         trim.addWidget(_label("Space play/pause • ←/→ 1s • Shift+←/→ frame • "
-                              "I/O start/end • Del delete layer", "muted"))
+                              "I/O start/end • Del delete layer • mouse wheel on the timeline zooms", "muted"))
         trim.addStretch(1)
         trim.addWidget(self.widen)
         lay.addLayout(trim)
@@ -499,6 +500,7 @@ class EditorDialog(QDialog):
         self.canvas.set_comp(info, self.comp)
         self._rebuild_list(select=0)
         self._set_mode("canvas")
+        self.timeline.limit = info.duration
         pad = max(20.0, (end - start) * 0.6)
         self._set_view(max(0.0, start - pad), min(info.duration, end + pad))
         self.timeline.set_selection(self.s0, self.s1)

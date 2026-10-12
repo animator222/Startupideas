@@ -32,10 +32,13 @@ top-right of the start screen. If something is broken, run `Install.bat` again t
      below) - e.g. zoomed gameplay, your webcam in a corner and your item bar at the bottom.
      Every clip then starts with it. Saved separately for each video shape and export shape.
    - **Kill badge area:** the app needs to know where your red KILL badge appears on screen. It
-     has defaults for normal horizontal recordings and for your vertical layout. If kills are
-     missed, press **Set kill badge area...**, find a moment with a kill, draw a box around the
-     badge and press **Check this frame**. It's saved separately for vertical and horizontal
-     videos, so you only do it once per layout.
+     has defaults, but if kills are missed press **Set kill badge area...**:
+     - move through the video with the **timeline** (click or drag; **mouse wheel zooms in**), the
+       play buttons or the keyboard (Space, arrows, Shift+arrows for single frames)
+     - the **live check** says on every frame whether a kill badge is inside your box and circles it
+     - draw the box yourself, or press **Fit the box around this badge** once it's found
+     - leave about one badge-width of room around it and keep the crosshair out; **Save**
+     It's saved separately for vertical and horizontal videos, so you only do it once per layout.
 3. **Find highlights.** The whole video is checked for your kill badge. The first scan of a
    1-2 hour video takes roughly 5-10 minutes; going back to the same video later is instant
    because the scan is saved.

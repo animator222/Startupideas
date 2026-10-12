@@ -18,6 +18,7 @@ class Timeline(QWidget):
     """Filmstrip with draggable start/end handles and a playhead. Click anywhere to jump there."""
     seek = Signal(float)
     trimmed = Signal(float, float)
+    view_changed = Signal(float, float)  # zoomed with the mouse wheel: thumbnails need re-making
 
     STRIP_H = 64
     HANDLE_W = 12
@@ -32,6 +33,8 @@ class Timeline(QWidget):
         self.pos_t = 0.0
         self.thumbs = []
         self._drag = None
+        self.show_selection = True  # False: no clip box, the timeline is only for moving around
+        self.limit = None  # video length, for mouse-wheel zoom
 
     def set_view(self, v0, v1):
         self.v0, self.v1 = v0, max(v1, v0 + 1)
@@ -67,6 +70,23 @@ class Timeline(QWidget):
             for i, pix in enumerate(self.thumbs):
                 p.drawPixmap(QRectF(i * tw, 0, tw + 1, sh), pix, QRectF(pix.rect()))
 
+        if self.show_selection:
+            self._paint_selection(p, w, sh)
+
+        # time ruler
+        p.setPen(QColor("#9a9ca5"))
+        span = self.v1 - self.v0
+        step = next((s for s in (1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600) if span / s <= 12), 7200)
+        t = (int(self.v0 // step) + 1) * step
+        while t < self.v1:
+            x = self._x(t)
+            p.drawLine(QPointF(x, sh), QPointF(x, sh + 5))
+            p.drawText(QRectF(x - 30, sh + 6, 60, 16), Qt.AlignCenter, fmt_time(t))
+            t += step
+        self._paint_playhead(p, sh)
+        p.end()
+
+    def _paint_selection(self, p, w, sh):
         x0, x1 = self._x(self.s0), self._x(self.s1)
         dim = QColor(0, 0, 0, 160)
         p.fillRect(QRectF(0, 0, max(0, x0), sh), dim)
@@ -84,26 +104,17 @@ class Timeline(QWidget):
         for hx in (x0 - hw / 2, x1 + hw / 2):
             p.drawLine(QPointF(hx, sh * 0.35), QPointF(hx, sh * 0.65))
 
-        # time ruler
-        p.setPen(QColor("#9a9ca5"))
-        span = self.v1 - self.v0
-        step = next(s for s in (1, 2, 5, 10, 15, 30, 60, 120, 300) if span / s <= 12)
-        t = (int(self.v0 // step) + 1) * step
-        while t < self.v1:
-            x = self._x(t)
-            p.drawLine(QPointF(x, sh), QPointF(x, sh + 5))
-            p.drawText(QRectF(x - 30, sh + 6, 60, 16), Qt.AlignCenter, fmt_time(t))
-            t += step
-
+    def _paint_playhead(self, p, sh):
         # playhead
         px = self._x(self.pos_t)
         p.setPen(QPen(QColor("white"), 2))
         p.drawLine(QPointF(px, 0), QPointF(px, sh + 4))
         p.setBrush(QColor("white"))
         p.drawEllipse(QPointF(px, sh + 4), 4, 4)
-        p.end()
 
     def _hit(self, x):
+        if not self.show_selection:
+            return "seek"
         x0, x1 = self._x(self.s0), self._x(self.s1)
         if x0 - self.HANDLE_W - 4 <= x <= x0 + 4:
             return "start"
@@ -136,3 +147,14 @@ class Timeline(QWidget):
     def mouseReleaseEvent(self, e):
         self._drag = None
 
+    def wheelEvent(self, e):
+        """Mouse wheel zooms the timeline in/out around the mouse pointer."""
+        if not self.limit:
+            return
+        t = self._t(e.position().x())
+        factor = 0.8 if e.angleDelta().y() > 0 else 1.25
+        span = min(self.limit, max(10.0, (self.v1 - self.v0) * factor))
+        frac = (t - self.v0) / max(1e-6, self.v1 - self.v0)
+        v0 = min(max(0.0, t - frac * span), max(0.0, self.limit - span))
+        self.set_view(v0, v0 + span)
+        self.view_changed.emit(self.v0, self.v1)
