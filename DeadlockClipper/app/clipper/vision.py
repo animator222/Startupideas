@@ -103,7 +103,10 @@ def detect_badge(crop, scale, short_side):
         score = min(1.0, circularity) * min(1.0, text_frac / 0.04)
         if score > best[0]:
             best = (score, x / scale, y / scale)
-    for found in (_souls_badge(hsv, d0), _touching_badge(red, light, d0, min_area) if best[0] < 0.5 else (0, -1, -1)):
+    # In vertical layouts the gameplay (and so the badge) is often shrunk to fit the width,
+    # so the badge can be about half its normal size: try smaller sizes too.
+    souls = max((_souls_badge(hsv, d0 * k) for k in (1.0, 0.75, 0.55)), key=lambda f: f[0])
+    for found in (souls, _touching_badge(red, light, d0, min_area) if best[0] < 0.5 else (0, -1, -1)):
         if found[0] > best[0]:
             best = (found[0], found[1] / scale, found[2] / scale)
     return best
@@ -114,7 +117,9 @@ def _souls_badge(hsv, d):
     you earned in mint-green ("$186"). Mint-green text of that size, surrounded by red on all
     sides, is very particular to this badge. Measured on the user's real screenshots."""
     H, S, V = hsv[..., 0], hsv[..., 1], hsv[..., 2]
-    green = ((H >= 35) & (H <= 100) & (S >= 40) & (V >= 140)).astype(np.uint8)
+    mint = (H >= 35) & (H <= 100) & (S >= 40) & (V >= 140)
+    white = (S <= 70) & (V >= 170)  # heavy compression (e.g. YouTube downloads) washes the mint out
+    green = (mint | white).astype(np.uint8)
     red = ((H <= 10) | (H >= 170)) & (S >= 100) & (V >= 60)
     merged = cv2.dilate(green, np.ones((3, max(3, int(d * 0.08))), np.uint8))  # join the digits
     n, _, stats, _ = cv2.connectedComponentsWithStats(merged)

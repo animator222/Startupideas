@@ -16,7 +16,7 @@ from .paths import ANALYSIS_REPORT, CACHE_DIR, LOG_DIR
 
 log = logging.getLogger(__name__)
 
-ANALYSIS_VERSION = 5  # v2 whole match; v3 buy menu; v4-5 badge detection for the 2026 UI
+ANALYSIS_VERSION = 6  # v2 whole match; v3 buy menu; v4-6 badge detection for the 2026 UI
 SMART_SCAN_PERCENTILE = 60  # video is scanned wherever the audio is above this loudness
 SCAN_PAD_BEFORE, SCAN_PAD_AFTER = 10.0, 12.0
 
