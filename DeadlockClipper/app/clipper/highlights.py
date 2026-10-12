@@ -14,7 +14,11 @@ from .vision import MENU_PANEL, SAMPLE_FPS
 log = logging.getLogger(__name__)
 
 BADGE_THRESHOLD = 0.5
-MULTIKILL_GAP = 12.0  # takedowns this close together form one moment
+MULTIKILL_GAP = 12.0  # takedowns this close together count as a multikill
+MOMENT_GAP = 20.0  # kills this close together go into the same clip (if it fits the max length)
+ACTION_QUIET_BEFORE = 3.0  # walking back from a kill, this much quiet means the fight hadn't started
+ACTION_QUIET_AFTER = 2.0  # after the last kill, this much quiet means the fight is over
+ACTION_MAX_AFTER = 10.0  # never run on more than this long after the last kill
 MENU_PAD = 4.0  # ignore badges this many seconds before/after the buy menu is seen open
 TEAMFIGHT_MIN_SECONDS = 5.0
 
@@ -166,33 +170,81 @@ MULTI_NAMES = {2: "Double kill", 3: "Triple kill", 4: "Quad kill"}
 MULTI_BONUS = {2: 15, 3: 30, 4: 50}
 
 
-def _candidates(events, settings):
+def _moments(takedowns, max_span):
+    """Group kills into clips: kills up to MOMENT_GAP apart share a clip while it fits."""
+    groups = []
+    for t in sorted(takedowns):
+        if groups and t - groups[-1][-1] <= MOMENT_GAP and t - groups[-1][0] <= max_span:
+            groups[-1].append(t)
+        else:
+            groups.append([t])
+    return groups
+
+
+def _action_bounds(events, first, last, settings, duration):
+    """Stretch a clip over the whole fight around its kills, using the game audio.
+
+    Walks back from the first kill while the audio shows action (stopping at a few seconds
+    of quiet) and forward from the last kill until things calm down. Stays within max length.
+    """
+    s = settings
+    curve = events.sustained
+    level = max(1.0, 0.5 * events.threshold)  # dB above the match's normal level = "action"
+    active = lambda t: 0 <= int(t / HOP) < len(curve) and curve[int(t / HOP)] > level  # noqa: E731
+    budget = s.max_len - (last - first) - s.post_roll - 1.0
+    start = first - s.pre_roll
+    t, quiet = first, 0.0
+    while first - t < budget and t > 0:
+        t -= HOP
+        quiet = 0.0 if active(t) else quiet + HOP
+        if quiet >= ACTION_QUIET_BEFORE:
+            break
+        if quiet == 0.0:
+            start = min(start, t - 2.0)  # a little lead-in before the action starts
+    start = max(start, first - budget, 0.0)
+
+    end = last + s.post_roll
+    t, quiet = last, 0.0
+    while t - last < ACTION_MAX_AFTER and t < duration:
+        t += HOP
+        quiet = 0.0 if active(t) else quiet + HOP
+        if quiet >= ACTION_QUIET_AFTER:
+            break
+        if quiet == 0.0:
+            end = max(end, t + 1.0)
+    end = min(end, start + s.max_len, duration)
+    return start, end
+
+
+def _candidates(events, settings, duration):
     s = settings
     cands = []
     max_peak = max([f.peak for f in events.fights], default=1.0) or 1.0
     used_fights = set()
+    max_span = max(0.0, s.max_len - s.pre_roll - s.post_roll)
 
-    for group in _cluster(events.takedowns, MULTIKILL_GAP):
+    for group in _moments(events.takedowns, max_span):
         n = len(group)
         first, last = group[0], group[-1]
-        reasons = []
-        is_multi = n >= 2
+        best_multi = max(len(c) for c in _cluster(group, MULTIKILL_GAP))
+        is_multi = best_multi >= 2
         if is_multi and not (s.want_multikills or s.want_kills):
             continue
         if not is_multi and not s.want_kills:
             continue
-        score = 10.0 * n + MULTI_BONUS.get(n, 50 + 20 * (n - 4) if n > 4 else 0)
-        reasons.append(MULTI_NAMES.get(n, f"{n} takedowns (multikill)") if is_multi else "Your kill / assist")
+        score = 10.0 * n + MULTI_BONUS.get(best_multi, 50 + 20 * (best_multi - 4) if best_multi > 4 else 0)
+        reasons = [MULTI_NAMES.get(best_multi, f"{best_multi} takedowns (multikill)") if is_multi
+                   else "Your kill / assist"]
+        if n > best_multi:
+            reasons.append(f"{n} kills/assists in this clip")
 
-        start, end = first - s.pre_roll, last + s.post_roll
+        start, end = _action_bounds(events, first, last, s, duration)
         fight = _overlapping_fight(events.fights, first - 3, last + 3)
         if fight is not None:
             used_fights.add(id(fight))
             if fight.length >= TEAMFIGHT_MIN_SECONDS and s.want_teamfights:
                 score += 20 + 10 * fight.peak / max_peak
                 reasons.append(f"Teamfight (loud for {fight.length:.0f}s)")
-                start = min(start, max(fight.start - 2, first - 12))
-                end = max(end, min(fight.end + 1, last + 8))
             else:
                 score += 5 * fight.peak / max_peak
 
@@ -226,8 +278,8 @@ def _fit_length(clip, settings, duration):
         clip.start, clip.end = best_start, best_start + s.max_len
     if clip.length < s.min_len:
         extra = s.min_len - clip.length
-        clip.start -= extra * 0.6
-        clip.end += extra * 0.4
+        clip.start -= extra * 0.65  # more build-up before the action than after it
+        clip.end += extra * 0.35
     if clip.start < 0:
         clip.end, clip.start = clip.end - clip.start, 0.0
     if clip.end > duration:
@@ -256,7 +308,7 @@ def _handle_deaths(clip, deaths, settings):
 
 
 def pick_clips(events, settings, duration):
-    cands = [_fit_length(c, settings, duration) for c in _candidates(events, settings)]
+    cands = [_fit_length(c, settings, duration) for c in _candidates(events, settings, duration)]
     if settings.exclude_deaths:
         cands = [c for c in (_handle_deaths(c, events.deaths, settings) for c in cands) if c]
     cands.sort(key=lambda c: c.score, reverse=True)

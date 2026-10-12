@@ -64,6 +64,11 @@ top-right of the start screen. If something is broken, run `Install.bat` again t
 | Creep farming | Ignored: loud, but no badge |
 | Buy menu | Ignored: the shop's pale panel is recognised, and badges within 4 seconds of an open shop don't count (some shop icons are red with white symbols, like the kill badge) |
 
+**Clip length follows the action.** Each clip starts when the fight starts (the game audio
+picks up before your kill) and ends when it calms down after your last kill. Kills up to about
+20 seconds apart go into one clip. Your *Clip length* setting is the allowed range: quick
+pick-offs are padded up to the minimum, and long fights are cut to the maximum.
+
 By default **only moments with your kill/assist badge** become clips. Tick *Also include loud
 fights where no kill was seen* if you also want big fights you weren't credited in (this can
 pick up creep farming).
