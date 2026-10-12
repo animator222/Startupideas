@@ -72,7 +72,7 @@ top-right of the start screen. If something is broken, run `Install.bat` again t
 
 | What | How it's detected |
 |---|---|
-| Your kill or assist | The red **KILL / KILL ASSIST** badge that pops up above your crosshair |
+| Your kill or assist | The red **KILL / ASSIST** badge that pops up above your crosshair - the current badge is found by the mint-green souls amount ("$186") inside it, older badges by their white text |
 | Multikill | Two or more badges within 12 seconds |
 | Teamfight | A kill badge during at least 5 seconds of loud game audio |
 | Your death | The screen turning grey (death screen) |

@@ -81,9 +81,7 @@ def detect_badge(crop, scale, short_side):
     d0 = BADGE_DIAMETER_1080P * (short_side / 1080.0) * scale
     min_area = np.pi / 4 * (0.45 * d0) ** 2
     max_area = np.pi / 4 * (1.8 * d0) ** 2
-    # The text inside the badge: anything bright that isn't the badge's own red. Covers white
-    # "KILL", yellowish "ASSIST" and the green souls amount ("$145") added in a 2026 update.
-    light = (v >= 160) & ~(((h <= 10) | (h >= 170)) & (s >= 90))
+    light = (v >= 170) & (s <= 90)  # the white text inside the older badge
 
     best = (0.0, -1.0, -1.0)
     for c in contours:
@@ -105,10 +103,44 @@ def detect_badge(crop, scale, short_side):
         score = min(1.0, circularity) * min(1.0, text_frac / 0.04)
         if score > best[0]:
             best = (score, x / scale, y / scale)
-    if best[0] < 0.5:
-        disk = _touching_badge(red, light, d0, min_area)
-        if disk[0] > best[0]:
-            best = (disk[0], disk[1] / scale, disk[2] / scale)
+    for found in (_souls_badge(hsv, d0), _touching_badge(red, light, d0, min_area) if best[0] < 0.5 else (0, -1, -1)):
+        if found[0] > best[0]:
+            best = (found[0], found[1] / scale, found[2] / scale)
+    return best
+
+
+def _souls_badge(hsv, d):
+    """The current (2026) badge: a red splash with KILL/ASSIST and, below the centre, the souls
+    you earned in mint-green ("$186"). Mint-green text of that size, surrounded by red on all
+    sides, is very particular to this badge. Measured on the user's real screenshots."""
+    H, S, V = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+    green = ((H >= 35) & (H <= 100) & (S >= 40) & (V >= 140)).astype(np.uint8)
+    red = ((H <= 10) | (H >= 170)) & (S >= 100) & (V >= 60)
+    merged = cv2.dilate(green, np.ones((3, max(3, int(d * 0.08))), np.uint8))  # join the digits
+    n, _, stats, _ = cv2.connectedComponentsWithStats(merged)
+    rows, cols = red.shape
+    best = (0.0, -1.0, -1.0)
+    for x, y, w, h, _ in stats[1:n]:
+        # Real souls text: about 0.42 x 0.13 of the badge size, about a third filled.
+        if not (0.30 * d <= w <= 0.62 * d and 0.08 * d <= h <= 0.22 * d):
+            continue
+        density = float(green[y:y + h, x:x + w].mean())
+        if not (0.22 <= density <= 0.55):
+            continue
+        cx, cy = x + w / 2, y + h / 2
+
+        def red_share(x0, x1, y0, y1):
+            x0, x1 = int(max(0, cx + x0 * d)), int(min(cols, cx + x1 * d))
+            y0, y1 = int(max(0, cy + y0 * d)), int(min(rows, cy + y1 * d))
+            return float(red[y0:y1, x0:x1].mean()) if x1 > x0 and y1 > y0 else 0.0
+
+        around = sorted((red_share(-0.6, -0.3, -0.4, 0.15), red_share(0.3, 0.6, -0.4, 0.15),
+                         red_share(-0.3, 0.3, -0.62, -0.38), red_share(-0.3, 0.3, 0.12, 0.35)))
+        if around[0] < 0.08 or around[1] < 0.25:
+            continue
+        score = min(1.0, 0.55 + around[1])
+        if score > best[0]:
+            best = (score, cx, cy - 0.12 * d)  # the badge's centre is just above the souls text
     return best
 
 
