@@ -8,6 +8,7 @@ from .. import APP_NAME, APP_VERSION
 from ..analysis import analyze, write_report
 from ..errors import FriendlyError
 from ..export import export_clips, output_filter
+from .layout_area import DEFAULT_LAYOUT
 from ..ffmpeg import extract_frame, probe
 from ..highlights import find_events, pick_clips
 from ..paths import CACHE_DIR
@@ -117,7 +118,7 @@ class MainWindow(QMainWindow):
                     out[(orientation, fmt)] = extract_frame(
                         info.path, t, CACHE_DIR / f"preview_{orientation}_{fmt}_{job}.png",
                         filter_complex=output_filter(info, fmt, orientation, zoom, 0.5, 0.5,
-                                                     lay or {"game": [0, 0, 1, 1]}))
+                                                     lay or DEFAULT_LAYOUT))
             return out
 
         def done(paths):

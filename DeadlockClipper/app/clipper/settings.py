@@ -14,7 +14,7 @@ class Settings:
     max_len: int = 45
     vertical_format: str = "blur"  # "blur" (full frame) or "zoom" (zoomed gameplay), both on a blurred background
     zoom_level: float = 1.4  # how much "zoom" enlarges the gameplay (1.4 = 140%)
-    layout_landscape: dict = None  # stacked layout boxes for horizontal videos: {"game", "cam", "items"}
+    layout_landscape: dict = None  # stacked layout for horizontal videos: {"sections": [...]}, top to bottom
     layout_portrait: dict = None  # ... and for vertical videos
     output_orientation: str = "vertical"  # "vertical" 1080x1920 or "horizontal" 1920x1080
     badge_region_landscape: list = None  # kill badge search area for horizontal videos (x, y, w, h)
@@ -43,11 +43,7 @@ class Settings:
         if self.vertical_format == "crop":  # "crop to fill" was replaced by zoom
             self.vertical_format = "zoom"
         for name in ("layout_landscape", "layout_portrait"):
-            lay = getattr(self, name)
-            ok = isinstance(lay, dict) and _valid_box(lay.get("game"))
-            setattr(self, name, {"game": [float(v) for v in lay["game"]],
-                                 **{k: [float(v) for v in lay[k]] if _valid_box(lay.get(k)) else None
-                                    for k in ("cam", "items")}} if ok else None)
+            setattr(self, name, clean_layout(getattr(self, name)))
         if self.vertical_format not in ("blur", "zoom", "layout"):
             self.vertical_format = "blur"
         try:
@@ -66,6 +62,30 @@ def _valid_box(r):
     ok = isinstance(r, (list, tuple)) and len(r) == 4 and all(isinstance(v, (int, float)) for v in r)
     return ok and r[2] > 0.02 and r[3] > 0.02 and r[0] >= 0 and r[1] >= 0 and \
         r[0] + r[2] <= 1.001 and r[1] + r[3] <= 1.001
+
+
+def clean_layout(lay):
+    """A valid {"sections": [{"name", "box", "main"}, ...]} (top to bottom) or None.
+    Converts the older {"game", "cam", "items"} format."""
+    if not isinstance(lay, dict):
+        return None
+    if "sections" not in lay and _valid_box(lay.get("game")):
+        old = [("Webcam", lay.get("cam"), False), ("Gameplay", lay.get("game"), True),
+               ("Items", lay.get("items"), False)]
+        lay = {"sections": [{"name": n, "box": b, "main": m} for n, b, m in old if _valid_box(b)]}
+    sections = []
+    for sec in lay.get("sections") or []:
+        if isinstance(sec, dict) and _valid_box(sec.get("box")):
+            sections.append({"name": str(sec.get("name") or "Section")[:30],
+                             "box": [float(v) for v in sec["box"]], "main": bool(sec.get("main"))})
+    if not sections:
+        return None
+    mains = [s for s in sections if s["main"]]
+    for s in mains[1:]:
+        s["main"] = False
+    if not mains:
+        max(sections, key=lambda s: s["box"][2] * s["box"][3])["main"] = True
+    return {"sections": sections}
 
 
 def load_settings():
@@ -96,4 +116,4 @@ def badge_region(settings, info):
 
 def layout_for(settings, info):
     """The stacked layout saved for this video's shape, or None if not set up yet."""
-    return settings.layout_portrait if info.height > info.width else settings.layout_landscape
+    return clean_layout(settings.layout_portrait if info.height > info.width else settings.layout_landscape)

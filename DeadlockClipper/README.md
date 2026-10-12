@@ -28,12 +28,15 @@ top-right of the start screen. If something is broken, run `Install.bat` again t
    **Export as** vertical (Shorts/Reels) or horizontal (YouTube), the format (click the preview
    you like): **full frame** or **zoomed gameplay**, both on a blurred background, with a
    **Zoom** slider (110-250%) - and what counts as a highlight. Your choices are remembered for next time.
-   - **Stacked layout** (vertical clips): webcam at the top, gameplay in the middle, items/HUD
-     at the bottom, on a blurred background - the classic streamer Shorts layout. Press
-     **Set up layout...**, find a frame where your webcam and items are visible, and drag the
-     GAMEPLAY, WEBCAM and ITEMS boxes over them (untick webcam or items if you don't need them).
-     The Zoom slider sets how big the gameplay is. Saved separately for horizontal and vertical
-     recordings - e.g. for a vertical recording you can box just the gameplay band.
+   - **Stacked layout** (vertical clips): parts of your video stacked top to bottom on a blurred
+     background - e.g. webcam, gameplay, item bar - the classic streamer Shorts layout. Press
+     **Set up layout...**, find a frame where everything is visible, and:
+     - **+ Add section** / **Remove section** for as many parts as you need (webcam, chat, items...)
+     - give each a **Name**, drag/resize its box over the right part of the video
+     - **Move up / Move down** sets the order in the clip (the list is top to bottom)
+     - one section is the **Main section (gameplay)**: it fills the space the others leave, and
+       the Zoom slider sets how big it is
+     Saved separately for horizontal and vertical recordings.
    - **Kill badge area:** the app needs to know where your red KILL badge appears on screen. It
      has defaults for normal horizontal recordings and for your vertical layout. If kills are
      missed, press **Set kill badge area...**, find a moment with a kill, draw a box around the

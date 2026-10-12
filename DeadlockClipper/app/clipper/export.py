@@ -38,8 +38,8 @@ def vertical_filter(fmt, fps_str=None, pan_x=0.5, orientation="vertical", zoom=1
             f"[bg][fg]overlay=(W-w)/2:(H-h)/2" + tail)
 
 
-LAYOUT_CAM_MAX = 0.30  # webcam panel uses at most this much of the output height
-LAYOUT_ITEMS_MAX = 0.22  # items panel at most this much
+LAYOUT_PANELS_MAX = 0.60  # all non-gameplay sections together use at most this much height
+LAYOUT_PANEL_MAX = 0.30  # ... and one section at most this much
 
 
 def _even(v):
@@ -47,56 +47,63 @@ def _even(v):
 
 
 def layout_filter(info, layout, fps_str=None, zoom=1.0, pan_x=0.5, pan_y=0.5):
-    """Vertical 1080x1920 "stacked" layout: webcam on top, gameplay in the middle, items at the
-    bottom, on a blurred background. layout = {"game": [x, y, w, h], "cam": [...] or None,
-    "items": [...] or None}, boxes as fractions of the source frame."""
+    """Vertical 1080x1920 "stacked" layout: the sections are stacked top to bottom in their
+    order, on a blurred background. The main (gameplay) section fills the space the others
+    leave and is enlarged by `zoom`; the others are fitted to the width.
+    layout = {"sections": [{"name", "box": [x, y, w, h] (fractions of the frame), "main"}]}."""
     ow, oh = OUTPUT_SIZES["vertical"]
+    sections = layout["sections"]
 
     def box(r):
         x, y, w, h = r
         bw, bh = _even(w * info.width), _even(h * info.height)
-        bx = min(_even(x * info.width), info.width - bw)
-        by = min(_even(y * info.height), info.height - bh)
-        return bw, bh, max(0, bx), max(0, by)
+        bx = max(0, min(_even(x * info.width), info.width - bw))
+        by = max(0, min(_even(y * info.height), info.height - bh))
+        return bw, bh, bx, by
 
-    def fit(bw, bh, max_w, max_h):
-        s = min(max_w / bw, max_h / bh)
-        return _even(bw * s), _even(bh * s)
+    boxes = [box(sec["box"]) for sec in sections]
+    main = next(i for i, sec in enumerate(sections) if sec["main"])
 
-    cam, items = layout.get("cam"), layout.get("items")
-    names = ["bgsrc", "g"] + (["c"] if cam else []) + (["i"] if items else [])
-    gw, gh, gx, gy = box(layout["game"])
-    bw, bh = ow // 4, oh // 4
-    graph = (f"[0:v:0]split={len(names)}" + "".join(f"[{n}]" for n in names) + ";"
-             f"[bgsrc]crop={gw}:{gh}:{gx}:{gy},scale={bw}:{bh}:force_original_aspect_ratio=increase,"
-             f"crop={bw}:{bh},boxblur=10:2,eq=brightness=-0.06,scale={ow}:{oh},setsar=1[bg];")
-    top, bottom, overlays = 0, oh, []
-    if cam:
-        w, h, x, y = box(cam)
-        cw, ch = fit(w, h, ow, oh * LAYOUT_CAM_MAX)
-        graph += f"[c]crop={w}:{h}:{x}:{y},scale={cw}:{ch}:flags=lanczos,setsar=1[cs];"
-        overlays.append(("cs", (ow - cw) // 2, 0))
-        top = ch
-    if items:
-        w, h, x, y = box(items)
-        iw, ih = fit(w, h, ow, oh * LAYOUT_ITEMS_MAX)
-        graph += f"[i]crop={w}:{h}:{x}:{y},scale={iw}:{ih}:flags=lanczos,setsar=1[is];"
-        overlays.append(("is", (ow - iw) // 2, oh - ih))
-        bottom = oh - ih
+    # Heights of the side panels: fit the width, cap each, then shrink them together if needed.
+    sizes = {}
+    for i, (bw, bh, _, _) in enumerate(boxes):
+        if i != main:
+            s = min(ow / bw, oh * LAYOUT_PANEL_MAX / bh)
+            sizes[i] = [bw * s, bh * s]
+    total = sum(h for _, h in sizes.values())
+    if total > oh * LAYOUT_PANELS_MAX:
+        k = oh * LAYOUT_PANELS_MAX / total
+        sizes = {i: [w * k, h * k] for i, (w, h) in sizes.items()}
+    sizes = {i: (_even(w), _even(h)) for i, (w, h) in sizes.items()}
+    slot = oh - sum(h for _, h in sizes.values())
 
-    # Gameplay fills the space in between: fit, then zoom; whatever doesn't fit is cut off.
-    slot = bottom - top
+    gw, gh, gx, gy = boxes[main]
     s = min(ow / gw, slot / gh) * max(1.0, zoom)
     sw, sh = _even(gw * s), _even(gh * s)
     vw, vh = min(sw, ow), min(sh, _even(slot))
     px, py = (min(1.0, max(0.0, p)) for p in (pan_x, pan_y))
-    graph += (f"[g]crop={gw}:{gh}:{gx}:{gy},scale={sw}:{sh}:flags=lanczos,"
-              f"crop={vw}:{vh}:{int((sw - vw) * px)}:{int((sh - vh) * py)},setsar=1[gs];")
-    overlays.insert(0, ("gs", (ow - vw) // 2, top + (slot - vh) // 2))
+
+    n = len(sections)
+    bw, bh = ow // 4, oh // 4
+    graph = (f"[0:v:0]split={n + 1}[bgsrc]" + "".join(f"[s{i}]" for i in range(n)) + ";"
+             f"[bgsrc]crop={gw}:{gh}:{gx}:{gy},scale={bw}:{bh}:force_original_aspect_ratio=increase,"
+             f"crop={bw}:{bh},boxblur=10:2,eq=brightness=-0.06,scale={ow}:{oh},setsar=1[bg];")
+    overlays, y = [], 0
+    for i, (w, h, x0, y0) in enumerate(boxes):
+        if i == main:
+            graph += (f"[s{i}]crop={w}:{h}:{x0}:{y0},scale={sw}:{sh}:flags=lanczos,"
+                      f"crop={vw}:{vh}:{int((sw - vw) * px)}:{int((sh - vh) * py)},setsar=1[p{i}];")
+            overlays.append((i, (ow - vw) // 2, y + (slot - vh) // 2))
+            y += slot
+        else:
+            pw, ph = sizes[i]
+            graph += f"[s{i}]crop={w}:{h}:{x0}:{y0},scale={pw}:{ph}:flags=lanczos,setsar=1[p{i}];"
+            overlays.append((i, (ow - pw) // 2, y))
+            y += ph
 
     current = "bg"
-    for k, (name, x, y) in enumerate(overlays):
-        graph += f"[{current}][{name}]overlay={x}:{y}[o{k}];"
+    for k, (i, x, yy) in enumerate(overlays):
+        graph += f"[{current}][p{i}]overlay={x}:{yy}[o{k}];"
         current = f"o{k}"
     return graph + f"[{current}]setsar=1" + (f",fps={fps_str}" if fps_str else "") + ",format=yuv420p[v]"
 

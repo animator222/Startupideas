@@ -341,8 +341,7 @@ class SettingsPage(QWidget):
         if not lay:
             self.layout_lbl.setText("Not set up yet for this video shape - press 'Set up layout'.")
         else:
-            parts = ["gameplay"] + [n for k, n in (("cam", "webcam"), ("items", "items")) if lay.get(k)]
-            self.layout_lbl.setText("Using: " + ", ".join(parts))
+            self.layout_lbl.setText("Top to bottom: " + ", ".join(s["name"] for s in lay["sections"]))
 
     def _set_layout(self):
         from ..settings import layout_for, save_settings
@@ -350,7 +349,8 @@ class SettingsPage(QWidget):
         dlg = LayoutDialog(self)
         dlg.open_video(self._info, layout_for(self._settings, self._info))
         if dlg.exec() == QDialog.Accepted:
-            lay = dlg.get_layout()
+            from ..settings import clean_layout
+            lay = clean_layout(dlg.get_layout())
             if self._info.height > self._info.width:
                 self._settings.layout_portrait = lay
             else:
