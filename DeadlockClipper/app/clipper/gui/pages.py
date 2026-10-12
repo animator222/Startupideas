@@ -180,7 +180,7 @@ class SettingsPage(QWidget):
     start = Signal(object)  # Settings
     back = Signal()
     zoom_changed = Signal(float)  # new zoom level: the zoom preview needs re-making
-    layout_changed = Signal()  # the stacked layout preview needs re-making
+    edit_layout = Signal()  # open the editor on "My layout"
 
     def __init__(self):
         super().__init__()
@@ -262,15 +262,15 @@ class SettingsPage(QWidget):
         self.opt_blur = FormatOption("Full frame + blurred background", "Shows the whole picture.")
         self.opt_zoom = FormatOption("Zoomed gameplay + blurred background",
                                      "Gameplay is bigger; its edges are cut off.")
-        self.opt_layout = FormatOption("Stacked layout", "Webcam on top, gameplay, items at the bottom.")
+        self.opt_layout = FormatOption("My layout", "Your own layers: gameplay, webcam, items, text...")
         group = QButtonGroup(self)
         for opt in (self.opt_blur, self.opt_zoom, self.opt_layout):
             group.addButton(opt.radio)
             opts.addWidget(opt)
         right.addLayout(opts)
         layout_row = QHBoxLayout()
-        self.layout_btn = button("Set up layout...")
-        self.layout_btn.clicked.connect(self._set_layout)
+        self.layout_btn = button("\u270E Edit my layout...")
+        self.layout_btn.clicked.connect(self.edit_layout.emit)
         self.layout_lbl = label("", "subtle", wrap=True)
         layout_row.addWidget(self.layout_btn)
         layout_row.addWidget(self.layout_lbl, 1)
@@ -326,7 +326,7 @@ class SettingsPage(QWidget):
         self.sens.setValue(settings.sensitivity)
         self.full.setChecked(settings.quick_scan)
         self.out_dir.setText(settings.output_dir)
-        {"zoom": self.opt_zoom, "layout": self.opt_layout}.get(settings.vertical_format, self.opt_blur).radio.setChecked(True)
+        {"zoom": self.opt_zoom, "custom": self.opt_layout}.get(settings.vertical_format, self.opt_blur).radio.setChecked(True)
         self.zoom.setValue(int(round(settings.zoom_level * 100)))
         self._info = info
         self._previews = {}
@@ -336,30 +336,13 @@ class SettingsPage(QWidget):
         self._update_layout_label()
 
     def _update_layout_label(self):
-        from ..settings import layout_for
-        lay = layout_for(self._settings, self._info)
-        if not lay:
-            self.layout_lbl.setText("Not set up yet for this video shape - press 'Set up layout'.")
+        from ..composition import template_key
+        comp = (self._settings.my_layouts or {}).get(template_key(self._info, self._orientation()))
+        if not comp:
+            self.layout_lbl.setText("Not made yet for this video and export shape - click 'Edit my layout'.")
         else:
-            self.layout_lbl.setText("Top to bottom: " + ", ".join(s["name"] for s in lay["sections"]))
-
-    def _set_layout(self):
-        from ..settings import layout_for, save_settings
-        from .layout_area import LayoutDialog
-        dlg = LayoutDialog(self)
-        dlg.open_video(self._info, layout_for(self._settings, self._info))
-        if dlg.exec() == QDialog.Accepted:
-            from ..settings import clean_layout
-            lay = clean_layout(dlg.get_layout())
-            if self._info.height > self._info.width:
-                self._settings.layout_portrait = lay
-            else:
-                self._settings.layout_landscape = lay
-            save_settings(self._settings)
-            log.info("Stacked layout set to %s", lay)
-            self._update_layout_label()
-            self.opt_layout.radio.setChecked(True)
-            self.layout_changed.emit()
+            names = [lay["name"] if lay["type"] == "video" else "text" for lay in reversed(comp["layers"])]
+            self.layout_lbl.setText("Layers (front to back): " + ", ".join(names))
 
     def _orientation(self):
         return "horizontal" if self.out_horizontal.isChecked() else "vertical"
@@ -368,11 +351,8 @@ class SettingsPage(QWidget):
         o = self._orientation()
         for opt in (self.opt_blur, self.opt_zoom, self.opt_layout):
             opt.set_shape(o)
-        # The stacked layout is made for vertical clips.
-        self.opt_layout.setEnabled(o == "vertical")
-        self.layout_btn.setEnabled(o == "vertical")
-        if o != "vertical" and self.opt_layout.radio.isChecked():
-            self.opt_zoom.radio.setChecked(True)
+        if getattr(self, "_settings", None) is not None:
+            self._update_layout_label()
         info = getattr(self, "_info", None)
         same = info is not None and (info.height > info.width) == (o == "vertical") and \
             abs(info.width / info.height - (9 / 16 if o == "vertical" else 16 / 9)) < 0.02
@@ -388,10 +368,8 @@ class SettingsPage(QWidget):
         if (o, "blur") in self._previews:
             self.opt_blur.set_image(self._previews[(o, "blur")])
             self.opt_zoom.set_image(self._previews[(o, "zoom")])
-        if o == "vertical" and ("vertical", "layout") in self._previews:
-            self.opt_layout.set_image(self._previews[("vertical", "layout")])
-        elif o != "vertical":
-            self.opt_layout.image.setText("Vertical only")
+        if (o, "custom") in self._previews:
+            self.opt_layout.set_image(self._previews[(o, "custom")])
 
     def _update_badge_label(self):
         info = self._info
@@ -427,7 +405,7 @@ class SettingsPage(QWidget):
         return replace(
             self._settings,
             num_clips=0 if self.all.isChecked() else self.num.value(), min_len=self.min_len.value(), max_len=self.max_len.value(),
-            vertical_format=("layout" if self.opt_layout.radio.isChecked() else
+            vertical_format=("custom" if self.opt_layout.radio.isChecked() else
                              "zoom" if self.opt_zoom.radio.isChecked() else "blur"),
             zoom_level=self.zoom.value() / 100,
             output_orientation=self._orientation(),
@@ -602,9 +580,13 @@ class ClipRow(QFrame):
         c = self.clip
         self.title.setText(f"Clip {self.index}   {fmt_time(c.start)} \u2192 {fmt_time(c.end)}"
                            f"   \u2022   {c.length:.1f}s   \u2022   score {c.score:g}")
-        fmt = {"zoom": "Zoomed" + (f" {round(c.zoom * 100)}%" if c.zoom else ""),
-               "layout": "Stacked layout", "blur": "Full frame"}.get(c.fmt, "")
-        self.detail.setText(f"Edited \u2022 {fmt}" if fmt else "")
+        if c.comp:
+            texts = sum(1 for lay in c.comp["layers"] if lay["type"] == "text")
+            videos = sum(1 for lay in c.comp["layers"] if lay["type"] == "video")
+            self.detail.setText(f"\u270E Edited \u2022 {videos} video layer{'s' if videos != 1 else ''}"
+                                + (f" \u2022 {texts} text" if texts else ""))
+        else:
+            self.detail.setText("")
 
     def valid(self):
         return 3 <= self.clip.length <= 60
@@ -612,6 +594,7 @@ class ClipRow(QFrame):
     def set_thumb(self, path):
         pix = QPixmap(str(path))
         if not pix.isNull():
+            self.thumb.setFixedSize(*((84, 150) if pix.height() > pix.width() else (192, 108)))
             self.thumb.setPixmap(pix.scaled(self.thumb.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
 
@@ -620,6 +603,7 @@ class ReviewPage(QWidget):
     edit = Signal(object)  # ClipRow
     export = Signal(list)
     back = Signal()
+    back_settings = Signal()
 
     def __init__(self):
         super().__init__()
@@ -675,8 +659,11 @@ class ReviewPage(QWidget):
         lay.addWidget(self.scroll, 1)
 
         nav = QHBoxLayout()
+        back_settings = button("\u2190 Back to settings")
+        back_settings.clicked.connect(self.back_settings.emit)
         back = button("Start over")
         back.clicked.connect(self.back.emit)
+        nav.addWidget(back_settings)
         self.export_btn = button("Export clips", primary=True)
         self.export_btn.clicked.connect(self._export)
         nav.addWidget(back); nav.addStretch(1); nav.addWidget(self.export_btn)
@@ -752,6 +739,7 @@ class ReviewPage(QWidget):
 
 class DonePage(QWidget):
     again = Signal()
+    back = Signal()
 
     def __init__(self):
         super().__init__()
@@ -764,9 +752,11 @@ class DonePage(QWidget):
         lay.addStretch(1)
         row = QHBoxLayout()
         self.open_btn = button("Open clips folder", primary=True)
+        back = button("\u2190 Back to clips")
+        back.clicked.connect(self.back.emit)
         again = button("Make more clips")
         again.clicked.connect(self.again.emit)
-        row.addWidget(again); row.addStretch(1); row.addWidget(self.open_btn)
+        row.addWidget(back); row.addWidget(again); row.addStretch(1); row.addWidget(self.open_btn)
         lay.addLayout(row)
         self._folder = None
         self.open_btn.clicked.connect(lambda: self._folder and open_in_explorer(self._folder))

@@ -41,6 +41,8 @@ def main():
     app.setApplicationName(APP_NAME)
     app.setStyleSheet(STYLE)
     app.setWindowIcon(QIcon(os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")))
+    from clipper.textrender import font_families
+    font_families()  # register the bundled fonts on the main thread
     window = MainWindow()
     window.show()
     if len(sys.argv) > 1 and os.path.isfile(sys.argv[1]):

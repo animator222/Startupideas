@@ -6,115 +6,45 @@ from datetime import datetime
 from pathlib import Path
 
 from .errors import Cancelled, FriendlyError
-from .settings import layout_for
-from .ffmpeg import ENCODER_ARGS, ffmpeg_path, gpu_decode_args, popen, working_encoders
+from .composition import build_filter, canvas_size, comp_for_clip
+from .ffmpeg import ENCODER_ARGS, ffmpeg_path, gpu_decode_args, popen, run, working_encoders
+from .paths import CACHE_DIR
+from .textrender import render_text_png
 
 log = logging.getLogger(__name__)
 
-OUTPUT_SIZES = {"vertical": (1080, 1920), "horizontal": (1920, 1080)}
+TEXT_DIR = CACHE_DIR / "text"
 
 
-def vertical_filter(fmt, fps_str=None, pan_x=0.5, orientation="vertical", zoom=1.0, pan_y=0.5):
-    """ffmpeg filter graph from input 0 to [v], for any input shape.
-
-    orientation: 'vertical' (1080x1920) or 'horizontal' (1920x1080) output.
-    fmt 'blur': the whole frame, with a blurred, darkened copy filling the empty space.
-    fmt 'zoom': the same, but the gameplay is enlarged by `zoom` (e.g. 1.4 = 140%); whatever
-    no longer fits is cut off. pan_x / pan_y pick which part stays in view (0 = left/top,
-    0.5 = middle, 1 = right/bottom).
-    """
-    ow, oh = OUTPUT_SIZES.get(orientation, OUTPUT_SIZES["vertical"])
-    z = max(1.0, zoom) if fmt == "zoom" else 1.0
-    px, py = (min(1.0, max(0.0, p)) for p in (pan_x, pan_y))
-    fit = f"min({ow}/iw\\,{oh}/ih)*{z:.4f}"
-    tail = (f",fps={fps_str}" if fps_str else "") + ",format=yuv420p[v]"
-    bw, bh = ow // 4, oh // 4  # blur at low resolution: much faster, looks the same
-    return (f"[0:v:0]split=2[bgsrc][fgsrc];"
-            f"[bgsrc]scale={bw}:{bh}:force_original_aspect_ratio=increase,crop={bw}:{bh},"
-            f"boxblur=10:2,eq=brightness=-0.06,scale={ow}:{oh},setsar=1[bg];"
-            f"[fgsrc]scale=w='trunc(iw*{fit}/2)*2':h='trunc(ih*{fit}/2)*2':flags=lanczos,"
-            f"crop=w='min(iw\\,{ow})':h='min(ih\\,{oh})':x='(iw-ow)*{px:.4f}':y='(ih-oh)*{py:.4f}',"
-            f"setsar=1[fg];"
-            f"[bg][fg]overlay=(W-w)/2:(H-h)/2" + tail)
+def text_inputs(comp, folder, tag):
+    """Render the composition's text layers to PNGs. Returns ({layer index: path}, ...)."""
+    folder.mkdir(parents=True, exist_ok=True)
+    cw, ch = canvas_size(comp)
+    pngs = {}
+    for i, lay in enumerate(comp["layers"]):
+        if lay["type"] == "text" and not lay.get("hidden") and str(lay.get("text") or "").strip():
+            pngs[i] = render_text_png(lay, cw, ch, folder / f"{tag}_text{i}.png")
+    return pngs
 
 
-LAYOUT_PANELS_MAX = 0.60  # all non-gameplay sections together use at most this much height
-LAYOUT_PANEL_MAX = 0.30  # ... and one section at most this much
+def comp_inputs(comp, pngs, duration):
+    """Extra ffmpeg inputs for the text PNGs and the mapping layer index -> input number."""
+    args, mapping = [], {}
+    for n, (i, path) in enumerate(sorted(pngs.items()), start=1):
+        args += ["-loop", "1", "-t", f"{duration:.3f}", "-i", str(path)]
+        mapping[i] = n
+    return args, mapping
 
 
-def _even(v):
-    return max(2, int(v) // 2 * 2)
-
-
-def layout_filter(info, layout, fps_str=None, zoom=1.0, pan_x=0.5, pan_y=0.5):
-    """Vertical 1080x1920 "stacked" layout: the sections are stacked top to bottom in their
-    order, on a blurred background. The main (gameplay) section fills the space the others
-    leave and is enlarged by `zoom`; the others are fitted to the width.
-    layout = {"sections": [{"name", "box": [x, y, w, h] (fractions of the frame), "main"}]}."""
-    ow, oh = OUTPUT_SIZES["vertical"]
-    sections = layout["sections"]
-
-    def box(r):
-        x, y, w, h = r
-        bw, bh = _even(w * info.width), _even(h * info.height)
-        bx = max(0, min(_even(x * info.width), info.width - bw))
-        by = max(0, min(_even(y * info.height), info.height - bh))
-        return bw, bh, bx, by
-
-    boxes = [box(sec["box"]) for sec in sections]
-    main = next(i for i, sec in enumerate(sections) if sec["main"])
-
-    # Heights of the side panels: fit the width, cap each, then shrink them together if needed.
-    sizes = {}
-    for i, (bw, bh, _, _) in enumerate(boxes):
-        if i != main:
-            s = min(ow / bw, oh * LAYOUT_PANEL_MAX / bh)
-            sizes[i] = [bw * s, bh * s]
-    total = sum(h for _, h in sizes.values())
-    if total > oh * LAYOUT_PANELS_MAX:
-        k = oh * LAYOUT_PANELS_MAX / total
-        sizes = {i: [w * k, h * k] for i, (w, h) in sizes.items()}
-    sizes = {i: (_even(w), _even(h)) for i, (w, h) in sizes.items()}
-    slot = oh - sum(h for _, h in sizes.values())
-
-    gw, gh, gx, gy = boxes[main]
-    s = min(ow / gw, slot / gh) * max(1.0, zoom)
-    sw, sh = _even(gw * s), _even(gh * s)
-    vw, vh = min(sw, ow), min(sh, _even(slot))
-    px, py = (min(1.0, max(0.0, p)) for p in (pan_x, pan_y))
-
-    n = len(sections)
-    bw, bh = ow // 4, oh // 4
-    graph = (f"[0:v:0]split={n + 1}[bgsrc]" + "".join(f"[s{i}]" for i in range(n)) + ";"
-             f"[bgsrc]crop={gw}:{gh}:{gx}:{gy},scale={bw}:{bh}:force_original_aspect_ratio=increase,"
-             f"crop={bw}:{bh},boxblur=10:2,eq=brightness=-0.06,scale={ow}:{oh},setsar=1[bg];")
-    overlays, y = [], 0
-    for i, (w, h, x0, y0) in enumerate(boxes):
-        if i == main:
-            graph += (f"[s{i}]crop={w}:{h}:{x0}:{y0},scale={sw}:{sh}:flags=lanczos,"
-                      f"crop={vw}:{vh}:{int((sw - vw) * px)}:{int((sh - vh) * py)},setsar=1[p{i}];")
-            overlays.append((i, (ow - vw) // 2, y + (slot - vh) // 2))
-            y += slot
-        else:
-            pw, ph = sizes[i]
-            graph += f"[s{i}]crop={w}:{h}:{x0}:{y0},scale={pw}:{ph}:flags=lanczos,setsar=1[p{i}];"
-            overlays.append((i, (ow - pw) // 2, y))
-            y += ph
-
-    current = "bg"
-    for k, (i, x, yy) in enumerate(overlays):
-        graph += f"[{current}][p{i}]overlay={x}:{yy}[o{k}];"
-        current = f"o{k}"
-    return graph + f"[{current}]setsar=1" + (f",fps={fps_str}" if fps_str else "") + ",format=yuv420p[v]"
-
-
-def output_filter(info, fmt, orientation, zoom, pan_x, pan_y, layout, fps_str=None):
-    """The filter for one clip. The stacked layout only applies to vertical output."""
-    if fmt == "layout" and orientation == "vertical" and layout:
-        return layout_filter(info, layout, fps_str, zoom, pan_x, pan_y)
-    if fmt == "layout":
-        fmt = "zoom"
-    return vertical_filter(fmt, fps_str, pan_x, orientation, zoom, pan_y)
+def render_preview(info, comp, t, out_path, tag="preview"):
+    """One finished frame of a composition (settings previews)."""
+    pngs = text_inputs(comp, TEXT_DIR, tag)
+    extra, mapping = comp_inputs(comp, pngs, 1.0)
+    cmd = [ffmpeg_path(), "-hide_banner", "-nostdin", "-v", "error", "-y",
+           "-ss", f"{max(0.0, t):.3f}", "-i", info.path, *extra,
+           "-filter_complex", build_filter(info, comp, mapping), "-map", "[v]", "-frames:v", "1", str(out_path)]
+    run(cmd, timeout=60)
+    return out_path
 
 
 def recording_date(path):
@@ -134,18 +64,15 @@ def output_paths(source, out_dir, count):
     return [out_dir / f"deadlock_{date}_clip{first + i:02d}.mp4" for i in range(count)]
 
 
-def _encode(info, clip, fmt, zoom, orientation, layout, out_path, encoder, progress, cancel, gpu_decode):
-    fmt = clip.fmt or fmt
-    zoom = (clip.zoom or zoom) if fmt in ("zoom", "layout") else 1.0
+def _encode(info, clip, comp, pngs, out_path, encoder, progress, cancel, gpu_decode):
     duration = clip.end - clip.start
+    extra, mapping = comp_inputs(comp, pngs, duration)
     cmd = [ffmpeg_path(), "-hide_banner", "-nostdin", "-v", "error", "-y",
            "-progress", "pipe:1", "-nostats"]
     if gpu_decode:
         cmd += gpu_decode_args(info)
-    cmd += ["-ss", f"{clip.start:.3f}", "-i", info.path, "-t", f"{duration:.3f}",
-           "-filter_complex", output_filter(info, fmt, orientation, zoom, clip.crop_x, clip.crop_y, layout,
-                                             info.fps_str),
-            "-map", "[v]"]
+    cmd += ["-ss", f"{clip.start:.3f}", "-i", info.path, *extra, "-t", f"{duration:.3f}",
+            "-filter_complex", build_filter(info, comp, mapping, info.fps_str), "-map", "[v]"]
     if info.has_audio:
         cmd += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"]
     cmd += [*ENCODER_ARGS[encoder], "-pix_fmt", "yuv420p", "-map_metadata", "-1",
@@ -188,21 +115,21 @@ def export_clips(info, clips, settings, progress, cancel):
     log.info("Exporting %d clips, encoders available: %s", len(clips), encoders)
     paths = output_paths(info.path, out_dir, len(clips))
     gpu_decode = True
-    layout = layout_for(settings, info)
     written = []
     for i, (clip, path) in enumerate(zip(clips, paths)):
+        comp = comp_for_clip(clip, settings, info)
+        pngs = text_inputs(comp, TEXT_DIR, f"clip{i}")
+        log.info("Clip %d layout: %s", i + 1, comp)
         def clip_progress(f, i=i):
             progress((i + f) / len(clips), f"Exporting clip {i + 1} of {len(clips)}")
         clip_progress(0)
         last_err = ""
         for encoder in list(encoders):
-            ok, last_err = _encode(info, clip, settings.vertical_format, settings.zoom_level, settings.output_orientation, layout, path,
-                                   encoder, clip_progress, cancel, gpu_decode)
+            ok, last_err = _encode(info, clip, comp, pngs, path, encoder, clip_progress, cancel, gpu_decode)
             if not ok and gpu_decode:
                 log.warning("Export with GPU decoding failed; decoding on the CPU from now on")
                 gpu_decode = False
-                ok, last_err = _encode(info, clip, settings.vertical_format, settings.zoom_level, settings.output_orientation, layout,
-                                       path, encoder, clip_progress, cancel, gpu_decode)
+                ok, last_err = _encode(info, clip, comp, pngs, path, encoder, clip_progress, cancel, gpu_decode)
             if ok:
                 log.info("Wrote %s with %s", path, encoder)
                 break

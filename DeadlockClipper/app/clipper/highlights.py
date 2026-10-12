@@ -53,10 +53,7 @@ class Clip:
     reasons: list = field(default_factory=list)
     takedowns: list = field(default_factory=list)
     focus: float = 0.0  # best moment, used for the thumbnail
-    fmt: str = ""  # per-clip format chosen in the editor ("blur" or "zoom"); "" = use the setting
-    zoom: float = 0.0  # per-clip zoom level; 0 = use the setting
-    crop_x: float = 0.5  # what part stays in view when zoomed: 0 = left edge, 0.5 = middle, 1 = right
-    crop_y: float = 0.5  # ... 0 = top, 0.5 = middle, 1 = bottom
+    comp: dict = None  # this clip's own layout from the editor (None = use the settings)
 
     @property
     def length(self):

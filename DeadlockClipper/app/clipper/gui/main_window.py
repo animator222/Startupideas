@@ -7,12 +7,12 @@ from PySide6.QtWidgets import QMainWindow, QMessageBox, QStackedWidget
 from .. import APP_NAME, APP_VERSION
 from ..analysis import analyze, write_report
 from ..errors import FriendlyError
-from ..export import export_clips, output_filter
-from .layout_area import DEFAULT_LAYOUT
-from ..ffmpeg import extract_frame, probe
+from ..composition import clean_comp, comp_for_clip, simple_comp, template_key
+from ..export import export_clips, render_preview
+from ..ffmpeg import probe
 from ..highlights import find_events, pick_clips
 from ..paths import CACHE_DIR
-from ..settings import badge_region, layout_for, load_settings, save_settings
+from ..settings import badge_region, load_settings, save_settings
 from ..youtube import download
 from .common import show_error, start_task
 from .editor import EditorDialog
@@ -31,6 +31,7 @@ class MainWindow(QMainWindow):
         self.analysis = None
         self.events = None
         self.task = None
+        self._editing = None
 
         self.stack = QStackedWidget()
         self.setCentralWidget(self.stack)
@@ -44,16 +45,19 @@ class MainWindow(QMainWindow):
         self.home.url_chosen.connect(self.open_url)
         self.setup.back.connect(lambda: self.stack.setCurrentWidget(self.home))
         self.setup.start.connect(self.run_analysis)
-        self.setup.zoom_changed.connect(lambda z: self._make_previews(("zoom", "layout"), z))
-        self.setup.layout_changed.connect(
-            lambda: self._make_previews(("layout",), self.setup.zoom.value() / 100))
+        self.setup.zoom_changed.connect(lambda z: self._make_previews(("zoom",), z))
+        self.setup.edit_layout.connect(self.edit_my_layout)
         self.progress.cancel.connect(self._cancel)
         self.review.repick.connect(self.repick)
         self.review.edit.connect(self.edit_clip)
         self.editor.saved.connect(self._clip_saved)
+        self.editor.apply_all.connect(self._apply_to_all)
+        self.editor.template_saved.connect(self._save_my_layout)
         self.review.export.connect(self.run_export)
         self.review.back.connect(self.go_home)
+        self.review.back_settings.connect(self.show_settings)
         self.done.again.connect(self.go_home)
+        self.done.back.connect(lambda: self.stack.setCurrentWidget(self.review))
 
     # ------------------------------------------------------------ helpers
 
@@ -100,26 +104,25 @@ class MainWindow(QMainWindow):
         self.setup.load(self.settings, self.info)
         self.stack.setCurrentWidget(self.setup)
 
-        self._make_previews(("blur", "zoom", "layout"), self.settings.zoom_level)
+        self._make_previews(("blur", "zoom", "custom"), self.settings.zoom_level)
 
     def _make_previews(self, formats, zoom):
+        """Finished-frame previews for the settings screen, for both export shapes."""
         info = self.info
-        lay = layout_for(self.setup._settings, info)
         self._preview_job = getattr(self, "_preview_job", 0) + 1
         job = self._preview_job
+        comps = {}
+        for orientation in ("vertical", "horizontal"):
+            for fmt in formats:
+                st = replace(self.setup._settings, vertical_format=fmt, output_orientation=orientation,
+                             zoom_level=zoom)
+                comps[(orientation, fmt)] = comp_for_clip(None, st, info)
 
         def previews(progress, cancel):
             t = min(info.duration * 0.4, max(0.0, info.duration - 1))
-            out = {}
-            for orientation in ("vertical", "horizontal"):
-                for fmt in formats:
-                    if fmt == "layout" and orientation != "vertical":
-                        continue
-                    out[(orientation, fmt)] = extract_frame(
-                        info.path, t, CACHE_DIR / f"preview_{orientation}_{fmt}_{job}.png",
-                        filter_complex=output_filter(info, fmt, orientation, zoom, 0.5, 0.5,
-                                                     lay or DEFAULT_LAYOUT))
-            return out
+            return {key: render_preview(info, comp, t, CACHE_DIR / f"preview_{key[0]}_{key[1]}_{job}.png",
+                                        tag=f"preview_{key[0]}_{key[1]}")
+                    for key, comp in comps.items()}
 
         def done(paths):
             if job == self._preview_job:
@@ -127,6 +130,43 @@ class MainWindow(QMainWindow):
 
         start_task(self, previews, on_done=done,
                    on_failed=lambda m, d: log.warning("Preview failed: %s %s", m, d))
+
+    def edit_my_layout(self):
+        """Open the editor on 'My layout' for this video shape and the chosen export shape."""
+        st = self.setup.current()
+        key = template_key(self.info, st.output_orientation)
+        comp = clean_comp((st.my_layouts or {}).get(key)) or simple_comp(self.info, st.output_orientation,
+                                                                        st.zoom_level)
+        self.editor.open_template(self.info, comp, at=self.info.duration * 0.4)
+        self.editor.show()
+        self.editor.raise_()
+
+    def _save_my_layout(self, comp):
+        comp = clean_comp(comp)
+        if not comp:
+            return
+        key = template_key(self.info, comp["canvas"])
+        self.settings.my_layouts = dict(self.settings.my_layouts or {})
+        self.settings.my_layouts[key] = comp
+        self.setup._settings.my_layouts = self.settings.my_layouts
+        if self.stack.currentWidget() is self.setup or self.editor.template:
+            self.setup.opt_layout.radio.setChecked(True)
+            self.settings.vertical_format = "custom"
+        save_settings(self.settings)
+        log.info("Saved my layout %s with %d layers", key, len(comp["layers"]))
+        self.setup._update_layout_label()
+        self._make_previews(("custom",), self.settings.zoom_level)
+
+    def _apply_to_all(self, comp):
+        """Every clip gets this layout's video layers and keeps its own text."""
+        videos = [lay for lay in comp["layers"] if lay["type"] == "video"]
+        for row in self.review.rows:
+            own_text = [lay for lay in (row.clip.comp or {}).get("layers", []) if lay["type"] == "text"]
+            if row is self._editing:
+                continue
+            row.clip.comp = {"canvas": comp["canvas"], "layers": [dict(v) for v in videos] + own_text}
+            row.refresh()
+        self._refresh_thumbs([row for row in self.review.rows if row is not self._editing])
 
     # ------------------------------------------------------------ analysis
 
@@ -160,36 +200,47 @@ class MainWindow(QMainWindow):
     def show_review(self, clips):
         self.review.show_results(self.info, self.events, clips, self.settings)
         self.stack.setCurrentWidget(self.review)
-        info = self.info
+        self._refresh_thumbs(self.review.rows)
+
+    def _refresh_thumbs(self, rows):
+        """Thumbnails show the finished look (layout, text) of each clip."""
+        info, settings = self.info, self.settings
+        jobs = [(row, comp_for_clip(row.clip, settings, info), row.clip.focus + 0.5) for row in rows]
+        self._thumb_job = getattr(self, "_thumb_job", 0) + 1
+        job = self._thumb_job
 
         def thumbs(progress, cancel):
             folder = CACHE_DIR / "thumbs"
             folder.mkdir(exist_ok=True)
             out = []
-            for i, c in enumerate(clips):
+            for k, (row, comp, t) in enumerate(jobs):
                 try:
-                    out.append(extract_frame(info.path, c.focus + 0.5, folder / f"clip_{i}.jpg", width=384))
+                    out.append(render_preview(info, comp, t, folder / f"thumb_{job}_{k}.jpg", tag=f"thumb{k}"))
                 except Exception:
-                    log.exception("Thumbnail failed for clip %d", i)
+                    log.exception("Thumbnail failed")
                     out.append(None)
             return out
 
-        start_task(self, thumbs, on_done=self.review.set_thumbs)
+        def done(paths):
+            for (row, _, _), path in zip(jobs, paths):
+                try:
+                    if path and row in self.review.rows:
+                        row.set_thumb(path)
+                except RuntimeError:  # the row was deleted meanwhile
+                    pass
+
+        start_task(self, thumbs, on_done=done)
 
     def edit_clip(self, row):
         self._editing = row
-        self.editor.open(self.info, row.clip, row.index, self.settings.vertical_format,
-                         self.settings.output_orientation, self.settings.zoom_level)
+        comp = comp_for_clip(row.clip, self.settings, self.info)
+        self.editor.open_clip(self.info, row.clip, row.index, comp)
         self.editor.show()
         self.editor.raise_()
 
     def _clip_saved(self, clip):
-        row = self._editing
-        row.refresh()
-        info = self.info
-        start_task(self, lambda progress, cancel: extract_frame(
-            info.path, clip.focus + 0.5, CACHE_DIR / "thumbs" / f"edited_{id(clip)}.jpg", width=384),
-            on_done=row.set_thumb)
+        self._editing.refresh()
+        self._refresh_thumbs([self._editing])
 
     # ------------------------------------------------------------ export
 

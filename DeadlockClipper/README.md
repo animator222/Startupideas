@@ -25,18 +25,12 @@ top-right of the start screen. If something is broken, run `Install.bat` again t
 1. **Pick a video.** Drag a recording onto the window, click **Choose a video file...**, or paste
    a YouTube link (local files are better quality and faster).
 2. **Settings.** Choose how many clips (or tick **All highlights** for no limit), how long,
-   **Export as** vertical (Shorts/Reels) or horizontal (YouTube), the format (click the preview
-   you like): **full frame** or **zoomed gameplay**, both on a blurred background, with a
-   **Zoom** slider (110-250%) - and what counts as a highlight. Your choices are remembered for next time.
-   - **Stacked layout** (vertical clips): parts of your video stacked top to bottom on a blurred
-     background - e.g. webcam, gameplay, item bar - the classic streamer Shorts layout. Press
-     **Set up layout...**, find a frame where everything is visible, and:
-     - **+ Add section** / **Remove section** for as many parts as you need (webcam, chat, items...)
-     - give each a **Name**, drag/resize its box over the right part of the video
-     - **Move up / Move down** sets the order in the clip (the list is top to bottom)
-     - one section is the **Main section (gameplay)**: it fills the space the others leave, and
-       the Zoom slider sets how big it is
-     Saved separately for horizontal and vertical recordings.
+   **Export as** vertical (Shorts/Reels) or horizontal (YouTube), and the look (click a preview):
+   **Full frame**, **Zoomed gameplay** (Zoom slider 110-250%) or **My layout**, and what counts as
+   a highlight. Your choices are remembered for next time.
+   - **My layout:** click **Edit my layout...** to build your own look once in the editor (see
+     below) - e.g. zoomed gameplay, your webcam in a corner and your item bar at the bottom.
+     Every clip then starts with it. Saved separately for each video shape and export shape.
    - **Kill badge area:** the app needs to know where your red KILL badge appears on screen. It
      has defaults for normal horizontal recordings and for your vertical layout. If kills are
      missed, press **Set kill badge area...**, find a moment with a kill, draw a box around the
@@ -45,23 +39,34 @@ top-right of the start screen. If something is broken, run `Install.bat` again t
 3. **Find highlights.** The whole video is checked for your kill badge. The first scan of a
    1-2 hour video takes roughly 5-10 minutes; going back to the same video later is instant
    because the scan is saved.
-4. **Review.** Each suggested clip shows a thumbnail, its time, a score and *why* it was picked.
-   - **Play / Edit** (or click the thumbnail) opens the editor in its own window. Closing that
-     window (X, Esc or Cancel) just discards your changes; the app stays open.
-     - The video plays at the top, with **play/pause**, **5 s back/forward** and **frame-by-frame** buttons.
-     - The **timeline** at the bottom shows the clip as a yellow box. Drag its left or right edge
-       to trim, or click anywhere on the timeline to jump there.
-     - **Set start here (I)** / **Set end here (O)** trim to the current playback position.
-     - **Play clip** plays just the trimmed part. **Show more timeline** lets you extend further.
-     - Choose **full frame**, **zoomed gameplay** or **stacked layout** for each clip, with its own zoom slider. When
-       zoomed, a box on the video shows what stays in view - drag it to choose that part.
-     - Keyboard: Space = play/pause, arrow keys = 1 second, Shift+arrows = one frame.
-   - Tick the clips you want to export (**Select all** / **Select none** help). Only ticked clips
-     are exported. **Delete** removes a clip from the list.
-   - Move **Fight sensitivity** and press **Re-pick clips** to get a different selection
-     without re-scanning.
-5. **Export.** Clips are saved as `deadlock_2026-09-25_clip01.mp4` and so on (the date comes from
-   the OBS file name). The default folder is `Videos\Deadlock Clips`.
+4. **Review.** Each suggested clip shows a thumbnail of the finished look, its time, a score and
+   *why* it was picked. Tick the clips you want (**Select all** / **Select none**); only ticked
+   clips are exported. **Delete** removes a clip, **Re-pick clips** re-chooses with a different
+   fight sensitivity without re-scanning, **Back to settings** goes back.
+   - **Play / Edit** (or click the thumbnail) opens the **editor** in its own window (it can be
+     maximised). Closing it (X, Esc or Cancel) just discards your changes.
+     - **Canvas** (centre) shows the **finished clip**, live while it plays. **Source video**
+       shows the original recording.
+     - **Layers** (left; top of the list = in front, untick to hide):
+       - **Gameplay** - drag it to move, drag a corner to resize, mouse wheel to zoom. Quick
+         start buttons: *Full frame* / *Zoomed*.
+       - **+ Video** adds another part of the recording (webcam, item bar, minimap...): mark
+         *which part* on **Source video** by dragging/resizing its box, then on **Canvas** move it
+         anywhere and resize it.
+       - **+ Text** adds text: pick a font (Anton, Bebas Neue, Bangers, Luckiest Guy, Montserrat,
+         Oswald, Poppins, Russo One, plus Impact/Arial Black if installed), colour, size, bold,
+         **shadow** (colour, strength) and **outline** (colour, width). Drag it on the canvas.
+       - Bring forward / send backward, duplicate, delete.
+     - **Properties** (right) shows the settings of the selected layer.
+     - Playback: play/pause, 5 s back/forward, frame by frame, mute. The **timeline** shows the
+       clip as a yellow box: drag its edges to trim, or use **Set start here (I)** /
+       **Set end here (O)**. **Play clip** plays just the trimmed part.
+     - **Apply layout to all clips** gives every clip these layers (each keeps its own text);
+       **Save as my layout** makes it the default for future clips (without this clip's text).
+     - Keyboard: Space play/pause, arrows 1 s, Shift+arrows one frame, I/O start/end, Del delete layer.
+5. **Export.** Clips look exactly like the editor preview. They are saved as `deadlock_2026-09-25_clip01.mp4` and so on (the date comes from
+   the OBS file name). The default folder is `Videos\Deadlock Clips`. **Back to clips** returns to
+   the list to export more.
 
 ## How it picks highlights
 

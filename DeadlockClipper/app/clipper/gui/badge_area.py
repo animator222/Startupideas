@@ -4,16 +4,51 @@ import logging
 import cv2
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, QSizeF, Qt, QUrl
-from PySide6.QtGui import QColor, QImage, QPen
+from PySide6.QtGui import QColor, QImage, QPainter, QPen
+from PySide6.QtMultimediaWidgets import QGraphicsVideoItem
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
-from PySide6.QtWidgets import QDialog, QGraphicsObject, QHBoxLayout, QSlider, QVBoxLayout
+from PySide6.QtWidgets import (
+    QDialog, QGraphicsObject, QGraphicsScene, QGraphicsView, QHBoxLayout, QSizePolicy, QSlider, QVBoxLayout,
+)
 
 from ..highlights import fmt_time
 from ..vision import BADGE_DIAMETER_1080P, CROP_W, default_region, detect_badge
-from .editor import VideoView
 from .pages import button, label
 
 log = logging.getLogger(__name__)
+
+
+class VideoView(QGraphicsView):
+    """The source video with an overlay item (e.g. a RegionBox) on top."""
+
+    def __init__(self, overlay):
+        super().__init__()
+        self.setScene(QGraphicsScene(self))
+        self.setBackgroundBrush(QColor("#0d0e11"))
+        self.setFrameShape(QGraphicsView.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setRenderHint(QPainter.SmoothPixmapTransform)
+        self.video = QGraphicsVideoItem()
+        self.overlay = overlay
+        self.scene().addItem(self.video)
+        self.scene().addItem(self.overlay)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+    def set_frame_size(self, w, h):
+        size = QSizeF(w, h)
+        self.video.setSize(size)
+        self.overlay.prepareGeometryChange()
+        self.overlay.size = size
+        self.scene().setSceneRect(QRectF(QPointF(0, 0), size))
+        self._fit()
+
+    def _fit(self):
+        self.fitInView(self.scene().sceneRect(), Qt.KeepAspectRatio)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._fit()
 
 
 class RegionBox(QGraphicsObject):
