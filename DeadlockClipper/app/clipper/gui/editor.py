@@ -32,43 +32,56 @@ def fmt_precise(t):
 # ---------------------------------------------------------------- crop box over the video
 
 class CropOverlay(QGraphicsObject):
-    """Shows which 9:16 part of the screen a center crop keeps. Drag it left/right."""
+    """Shows which part of the frame "crop to fill" keeps. Drag it along the axis that gets cut."""
     moved = Signal(float)
 
     def __init__(self):
         super().__init__()
         self.size = QSizeF(16, 9)
+        self.aspect = 9 / 16  # output width / height
         self.crop_x = 0.5
         self._drag = None
-        self.setCursor(Qt.SizeHorCursor)
+        self.setCursor(Qt.SizeAllCursor)
 
     def boundingRect(self):
         return QRectF(QPointF(0, 0), self.size)
 
+    def _free(self):
+        """(free pixels along x, free pixels along y) - only one of them is non-zero."""
+        w, h = self.size.width(), self.size.height()
+        if w / h > self.aspect:
+            return w - h * self.aspect, 0.0
+        return 0.0, h - w / self.aspect
+
     def box(self):
         w, h = self.size.width(), self.size.height()
-        bw = h * 9 / 16
-        return QRectF((w - bw) * self.crop_x, 0, bw, h)
+        fx, fy = self._free()
+        return QRectF(fx * self.crop_x, fy * self.crop_x, w - fx, h - fy)
 
     def paint(self, p, *_):
         b = self.box()
+        w, h = self.size.width(), self.size.height()
         dim = QColor(0, 0, 0, 150)
-        p.fillRect(QRectF(0, 0, b.left(), self.size.height()), dim)
-        p.fillRect(QRectF(b.right(), 0, self.size.width() - b.right(), self.size.height()), dim)
-        p.setPen(QPen(QColor("#f0b35a"), max(2.0, self.size.height() / 200)))
+        p.fillRect(QRectF(0, 0, w, b.top()), dim)
+        p.fillRect(QRectF(0, b.bottom(), w, h - b.bottom()), dim)
+        p.fillRect(QRectF(0, b.top(), b.left(), b.height()), dim)
+        p.fillRect(QRectF(b.right(), b.top(), w - b.right(), b.height()), dim)
+        p.setPen(QPen(QColor("#f0b35a"), max(2.0, min(w, h) / 200)))
         p.drawRect(b)
 
     def mousePressEvent(self, e):
-        self._drag = (e.pos().x(), self.crop_x)
+        self._drag = (e.pos(), self.crop_x)
 
     def mouseMoveEvent(self, e):
         if self._drag is None:
             return
-        free = self.size.width() - self.size.height() * 9 / 16
-        if free <= 0:
-            return
-        x0, c0 = self._drag
-        self.crop_x = min(1.0, max(0.0, c0 + (e.pos().x() - x0) / free))
+        fx, fy = self._free()
+        p0, c0 = self._drag
+        if fx > 1:
+            self.crop_x = c0 + (e.pos().x() - p0.x()) / fx
+        elif fy > 1:
+            self.crop_x = c0 + (e.pos().y() - p0.y()) / fy
+        self.crop_x = min(1.0, max(0.0, self.crop_x))
         self.update()
         self.moved.emit(self.crop_x)
 
@@ -77,7 +90,7 @@ class CropOverlay(QGraphicsObject):
 
 
 class VideoView(QGraphicsView):
-    def __init__(self):
+    def __init__(self, overlay=None):
         super().__init__()
         self.setScene(QGraphicsScene(self))
         self.setBackgroundBrush(QColor("#0d0e11"))
@@ -86,7 +99,7 @@ class VideoView(QGraphicsView):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setRenderHint(QPainter.SmoothPixmapTransform)
         self.video = QGraphicsVideoItem()
-        self.overlay = CropOverlay()
+        self.overlay = overlay or CropOverlay()
         self.scene().addItem(self.video)
         self.scene().addItem(self.overlay)
         self.video.nativeSizeChanged.connect(self._native_size)
@@ -322,9 +335,9 @@ class EditorDialog(QDialog):
         lay.addLayout(trim)
 
         fmt_row = QHBoxLayout()
-        fmt_row.addWidget(label("Vertical format for this clip:"))
+        fmt_row.addWidget(label("Format for this clip:"))
         self.fmt_blur = QRadioButton("Full frame + blurred background")
-        self.fmt_crop = QRadioButton("Center crop")
+        self.fmt_crop = QRadioButton("Crop to fill")
         group = QButtonGroup(self)
         group.addButton(self.fmt_blur)
         group.addButton(self.fmt_crop)
@@ -364,7 +377,7 @@ class EditorDialog(QDialog):
 
     # ------------------------------------------------------------ open / close
 
-    def open(self, info, clip, index, default_fmt):
+    def open(self, info, clip, index, default_fmt, orientation="vertical"):
         self.info, self.clip = info, clip
         self.s0, self.s1 = clip.start, clip.end
         self.title.setText(f"Edit clip {index}")
@@ -372,6 +385,11 @@ class EditorDialog(QDialog):
         self.reasons.setText(" • ".join(clip.reasons))
         self.view.set_frame_size(info.width, info.height)
         self.view.overlay.crop_x = clip.crop_x
+        self.view.overlay.aspect = 16 / 9 if orientation == "horizontal" else 9 / 16
+        fx, fy = self.view.overlay._free()
+        self.same_shape = fx < 2 and fy < 2  # input already has the output's shape
+        self.fmt_blur.setEnabled(not self.same_shape)
+        self.fmt_crop.setEnabled(not self.same_shape)
         fmt = clip.fmt or default_fmt
         (self.fmt_crop if fmt == "crop" else self.fmt_blur).setChecked(True)
         self._fmt_changed()
@@ -498,7 +516,7 @@ class EditorDialog(QDialog):
         self._set_view(max(0.0, v0 - 30), min(self.info.duration, v1 + 30))
 
     def _fmt_changed(self):
-        crop = self.fmt_crop.isChecked()
+        crop = self.fmt_crop.isChecked() and not getattr(self, "same_shape", False)
         self.view.overlay.setVisible(crop)
         self.crop_hint.setVisible(crop)
 

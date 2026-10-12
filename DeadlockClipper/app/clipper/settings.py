@@ -12,7 +12,10 @@ class Settings:
     num_clips: int = 5  # 0 = find all highlights (no limit)
     min_len: int = 15
     max_len: int = 45
-    vertical_format: str = "blur"  # "blur" (full frame + blurred background) or "crop" (center crop)
+    vertical_format: str = "blur"  # "blur" (full frame + blurred background) or "crop" (crop to fill)
+    output_orientation: str = "vertical"  # "vertical" 1080x1920 or "horizontal" 1920x1080
+    badge_region_landscape: list = None  # kill badge search area for horizontal videos (x, y, w, h)
+    badge_region_portrait: list = None  # ... and for vertical videos
     want_kills: bool = True
     want_multikills: bool = True
     want_teamfights: bool = True
@@ -36,6 +39,13 @@ class Settings:
         self.sensitivity = max(1, min(10, int(self.sensitivity)))
         if self.vertical_format not in ("blur", "crop"):
             self.vertical_format = "blur"
+        if self.output_orientation not in ("vertical", "horizontal"):
+            self.output_orientation = "vertical"
+        for name in ("badge_region_landscape", "badge_region_portrait"):
+            r = getattr(self, name)
+            ok = isinstance(r, (list, tuple)) and len(r) == 4 and all(isinstance(v, (int, float)) for v in r)
+            ok = ok and r[2] > 0.02 and r[3] > 0.02 and r[0] >= 0 and r[1] >= 0 and r[0] + r[2] <= 1.001 and r[1] + r[3] <= 1.001
+            setattr(self, name, [float(v) for v in r] if ok else None)
         return self
 
 
@@ -56,3 +66,10 @@ def save_settings(settings):
         SETTINGS_FILE.write_text(json.dumps(asdict(settings), indent=2), encoding="utf-8")
     except OSError:
         log.exception("Could not save settings")
+
+
+def badge_region(settings, info):
+    """The kill badge search area to use for this video (saved one, or the default)."""
+    from .vision import default_region
+    saved = settings.badge_region_portrait if info.height > info.width else settings.badge_region_landscape
+    return tuple(saved) if saved else default_region(info)

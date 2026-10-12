@@ -7,7 +7,7 @@ import numpy as np
 from PySide6.QtCore import QLineF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QButtonGroup, QCheckBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
+    QButtonGroup, QCheckBox, QDialog, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
     QLineEdit, QProgressBar, QPushButton, QRadioButton, QScrollArea, QSizePolicy, QSlider, QSpinBox,
     QVBoxLayout, QWidget,
 )
@@ -163,6 +163,11 @@ class FormatOption(QFrame):
         self.setProperty("selected", "true" if self.radio.isChecked() else "false")
         refresh_style(self)
 
+    def set_shape(self, orientation):
+        self.image.setFixedSize(*((288, 162) if orientation == "horizontal" else (162, 288)))
+        self.image.setPixmap(QPixmap())
+        self.image.setText("Making preview...")
+
     def set_image(self, path):
         pix = QPixmap(str(path))
         if not pix.isNull():
@@ -240,15 +245,36 @@ class SettingsPage(QWidget):
 
         # Right: vertical format previews
         right = QVBoxLayout()
-        right.addWidget(label("Vertical format (click one):"))
+        right.addWidget(label("Export as:"))
+        orient = QHBoxLayout()
+        self.out_vertical = QRadioButton("Vertical 9:16 (Shorts / Reels)")
+        self.out_horizontal = QRadioButton("Horizontal 16:9 (YouTube)")
+        og = QButtonGroup(self)
+        og.addButton(self.out_vertical); og.addButton(self.out_horizontal)
+        orient.addWidget(self.out_vertical); orient.addWidget(self.out_horizontal); orient.addStretch(1)
+        right.addLayout(orient)
+        self.out_vertical.toggled.connect(self._orientation_changed)
+
+        right.addWidget(label("Format (click one):"))
         opts = QHBoxLayout()
-        self.opt_blur = FormatOption("Full frame + blurred background", "Shows the whole screen.")
-        self.opt_crop = FormatOption("Center crop", "Fills the screen, cuts off the sides.")
+        self.opt_blur = FormatOption("Full frame + blurred background", "Shows the whole picture.")
+        self.opt_crop = FormatOption("Crop to fill", "Fills the screen, cuts off the edges.")
         group = QButtonGroup(self)
         group.addButton(self.opt_blur.radio); group.addButton(self.opt_crop.radio)
         opts.addWidget(self.opt_blur); opts.addWidget(self.opt_crop)
         right.addLayout(opts)
+        self.same_shape_lbl = label("Your video already has this shape, so it's just resized.", "subtle", wrap=True)
+        right.addWidget(self.same_shape_lbl)
+
+        right.addSpacing(8)
+        right.addWidget(label("Kill badge area:"))
+        self.badge_lbl = label("", "subtle", wrap=True)
+        right.addWidget(self.badge_lbl)
+        badge_btn = button("Set kill badge area...")
+        badge_btn.clicked.connect(self._set_badge_area)
+        right.addWidget(badge_btn, alignment=Qt.AlignLeft)
         right.addStretch(1)
+        self._previews = {}
         body.addLayout(right, 2)
 
         nav = QHBoxLayout()
@@ -277,13 +303,59 @@ class SettingsPage(QWidget):
         self.full.setChecked(settings.quick_scan)
         self.out_dir.setText(settings.output_dir)
         (self.opt_crop if settings.vertical_format == "crop" else self.opt_blur).radio.setChecked(True)
+        self._info = info
+        self._previews = {}
+        (self.out_horizontal if settings.output_orientation == "horizontal" else self.out_vertical).setChecked(True)
+        self._orientation_changed()
+        self._update_badge_label()
+
+    def _orientation(self):
+        return "horizontal" if self.out_horizontal.isChecked() else "vertical"
+
+    def _orientation_changed(self, *_):
+        o = self._orientation()
         for opt in (self.opt_blur, self.opt_crop):
-            opt.image.setPixmap(QPixmap())
-            opt.image.setText("Making preview...")
+            opt.set_shape(o)
+        info = getattr(self, "_info", None)
+        same = info is not None and (info.height > info.width) == (o == "vertical") and \
+            abs(info.width / info.height - (9 / 16 if o == "vertical" else 16 / 9)) < 0.02
+        self.same_shape_lbl.setVisible(same)
+        self._show_previews()
 
     def set_previews(self, paths):
-        self.opt_blur.set_image(paths["blur"])
-        self.opt_crop.set_image(paths["crop"])
+        self._previews = paths
+        self._show_previews()
+
+    def _show_previews(self):
+        o = self._orientation()
+        if (o, "blur") in self._previews:
+            self.opt_blur.set_image(self._previews[(o, "blur")])
+            self.opt_crop.set_image(self._previews[(o, "crop")])
+
+    def _update_badge_label(self):
+        info = self._info
+        portrait = info.height > info.width
+        saved = self._settings.badge_region_portrait if portrait else self._settings.badge_region_landscape
+        shape = "vertical" if portrait else "horizontal"
+        self.badge_lbl.setText(
+            f"Your video is {info.width}x{info.height} ({shape}). "
+            + ("Using the area you set for " + shape + " videos." if saved else
+               "Using the default area. If kills are missed, set it once using a moment with a kill."))
+
+    def _set_badge_area(self):
+        from ..settings import badge_region, save_settings
+        from .badge_area import BadgeAreaDialog
+        dlg = BadgeAreaDialog(self)
+        dlg.open_video(self._info, badge_region(self._settings, self._info))
+        if dlg.exec() == QDialog.Accepted:
+            region = [round(v, 4) for v in dlg.region()]
+            if self._info.height > self._info.width:
+                self._settings.badge_region_portrait = region
+            else:
+                self._settings.badge_region_landscape = region
+            save_settings(self._settings)
+            log.info("Kill badge area set to %s", region)
+            self._update_badge_label()
 
     def _pick_folder(self):
         path = QFileDialog.getExistingDirectory(self, "Where should clips be saved?", self.out_dir.text())
@@ -295,6 +367,7 @@ class SettingsPage(QWidget):
             self._settings,
             num_clips=0 if self.all.isChecked() else self.num.value(), min_len=self.min_len.value(), max_len=self.max_len.value(),
             vertical_format="crop" if self.opt_crop.radio.isChecked() else "blur",
+            output_orientation=self._orientation(),
             want_kills=self.kills.isChecked(), want_multikills=self.multi.isChecked(),
             want_teamfights=self.fights.isChecked(), want_loud_only=self.loud_only.isChecked(),
             want_objectives=False,
@@ -466,7 +539,7 @@ class ClipRow(QFrame):
         c = self.clip
         self.title.setText(f"Clip {self.index}   {fmt_time(c.start)} \u2192 {fmt_time(c.end)}"
                            f"   \u2022   {c.length:.1f}s   \u2022   score {c.score:g}")
-        fmt = {"crop": "Center crop", "blur": "Blurred background"}.get(c.fmt, "")
+        fmt = {"crop": "Crop to fill", "blur": "Blurred background"}.get(c.fmt, "")
         self.detail.setText(f"Edited \u2022 {fmt}" if fmt else "")
 
     def valid(self):

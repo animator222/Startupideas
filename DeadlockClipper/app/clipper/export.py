@@ -10,22 +10,30 @@ from .ffmpeg import ENCODER_ARGS, ffmpeg_path, popen, working_encoders
 
 log = logging.getLogger(__name__)
 
-OUT_W, OUT_H = 1080, 1920
+OUTPUT_SIZES = {"vertical": (1080, 1920), "horizontal": (1920, 1080)}
 
 
-def vertical_filter(fmt, fps_str=None, crop_x=0.5):
-    """ffmpeg filter graph from input 0 to [v]. fmt: 'crop' or 'blur'.
-    crop_x picks which part of the screen a center crop shows (0 = left, 1 = right)."""
+def vertical_filter(fmt, fps_str=None, crop_x=0.5, orientation="vertical"):
+    """ffmpeg filter graph from input 0 to [v], for any input shape.
+
+    orientation: 'vertical' (1080x1920) or 'horizontal' (1920x1080) output.
+    fmt 'crop': crop to fill the output; crop_x picks the position along the axis that gets
+    cut (0 = left/top, 1 = right/bottom). fmt 'blur': whole frame, blurred copy fills the rest.
+    If the input already has the output's shape, both simply scale it.
+    """
+    ow, oh = OUTPUT_SIZES.get(orientation, OUTPUT_SIZES["vertical"])
+    aspect = ow / oh
     tail = (f",fps={fps_str}" if fps_str else "") + ",format=yuv420p[v]"
     if fmt == "crop":
-        crop_x = min(1.0, max(0.0, crop_x))
-        return (f"[0:v:0]crop=trunc(ih*9/16/2)*2:ih:(iw-ow)*{crop_x:.4f}:0,"
-                f"scale={OUT_W}:{OUT_H}:flags=lanczos,setsar=1" + tail)
-    # Full frame in the middle, a blurred, slightly darkened zoomed copy filling the background.
+        p = min(1.0, max(0.0, crop_x))
+        return (f"[0:v:0]crop=w='trunc(min(iw,ih*{aspect:.6f})/2)*2':h='trunc(min(ih,iw/{aspect:.6f})/2)*2'"
+                f":x='(iw-ow)*{p:.4f}':y='(ih-oh)*{p:.4f}',"
+                f"scale={ow}:{oh}:flags=lanczos,setsar=1" + tail)
+    bw, bh = ow // 4, oh // 4  # blur at low resolution: much faster, looks the same
     return (f"[0:v:0]split=2[bgsrc][fgsrc];"
-            f"[bgsrc]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,"
-            f"boxblur=10:2,eq=brightness=-0.06,scale={OUT_W}:{OUT_H},setsar=1[bg];"
-            f"[fgsrc]scale={OUT_W}:-2:flags=lanczos,setsar=1[fg];"
+            f"[bgsrc]scale={bw}:{bh}:force_original_aspect_ratio=increase,crop={bw}:{bh},"
+            f"boxblur=10:2,eq=brightness=-0.06,scale={ow}:{oh},setsar=1[bg];"
+            f"[fgsrc]scale={ow}:{oh}:force_original_aspect_ratio=decrease:flags=lanczos,setsar=1[fg];"
             f"[bg][fg]overlay=(W-w)/2:(H-h)/2" + tail)
 
 
@@ -46,13 +54,13 @@ def output_paths(source, out_dir, count):
     return [out_dir / f"deadlock_{date}_clip{first + i:02d}.mp4" for i in range(count)]
 
 
-def _encode(info, clip, fmt, out_path, encoder, progress, cancel):
+def _encode(info, clip, fmt, orientation, out_path, encoder, progress, cancel):
     fmt = clip.fmt or fmt
     duration = clip.end - clip.start
     cmd = [ffmpeg_path(), "-hide_banner", "-nostdin", "-v", "error", "-y",
            "-progress", "pipe:1", "-nostats",
            "-ss", f"{clip.start:.3f}", "-i", info.path, "-t", f"{duration:.3f}",
-           "-filter_complex", vertical_filter(fmt, info.fps_str, clip.crop_x), "-map", "[v]"]
+           "-filter_complex", vertical_filter(fmt, info.fps_str, clip.crop_x, orientation), "-map", "[v]"]
     if info.has_audio:
         cmd += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"]
     cmd += [*ENCODER_ARGS[encoder], "-pix_fmt", "yuv420p", "-map_metadata", "-1",
@@ -101,7 +109,8 @@ def export_clips(info, clips, settings, progress, cancel):
         clip_progress(0)
         last_err = ""
         for encoder in list(encoders):
-            ok, last_err = _encode(info, clip, settings.vertical_format, path, encoder, clip_progress, cancel)
+            ok, last_err = _encode(info, clip, settings.vertical_format, settings.output_orientation, path,
+                                  encoder, clip_progress, cancel)
             if ok:
                 log.info("Wrote %s with %s", path, encoder)
                 break

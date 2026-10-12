@@ -21,10 +21,14 @@ from .ffmpeg import ffmpeg_path, popen
 log = logging.getLogger(__name__)
 
 SAMPLE_FPS = 4
-# Badge search area as fractions of the screen (x, y, width, height). The badge sits just
-# above the crosshair; this box is deliberately generous until we calibrate on real footage.
-BADGE_REGION = (0.35, 0.12, 0.30, 0.33)
-BADGE_DIAMETER_1080P = 115  # rough badge size in pixels on a 1080p screen
+# Default badge search areas as fractions of the frame (x, y, width, height). The user can
+# change them on the "Kill badge area" screen.
+# Horizontal 1920x1080 game capture: the badge sits just above the crosshair.
+DEFAULT_REGION_LANDSCAPE = (0.35, 0.12, 0.30, 0.33)
+# Vertical 1080x1920 layouts (e.g. OBS vertical canvas): measured from the user's Short, where
+# the gameplay is in the middle band and the badge sits above-right of centre.
+DEFAULT_REGION_PORTRAIT = (0.28, 0.25, 0.67, 0.25)
+BADGE_DIAMETER_1080P = 115  # rough badge size in pixels when the frame's short side is 1080
 CROP_W = 384
 THUMB_W, THUMB_H = 160, 90
 
@@ -33,8 +37,12 @@ def _even(x):
     return max(2, int(round(x / 2)) * 2)
 
 
-def _geometry(info):
-    rx, ry, rw, rh = BADGE_REGION
+def default_region(info):
+    return DEFAULT_REGION_PORTRAIT if info.height > info.width else DEFAULT_REGION_LANDSCAPE
+
+
+def _geometry(info, region):
+    rx, ry, rw, rh = region
     cw, ch = _even(info.width * rw), _even(info.height * rh)
     cx, cy = _even(info.width * rx), _even(info.height * ry)
     crop_h = _even(ch * CROP_W / cw)
@@ -42,15 +50,15 @@ def _geometry(info):
     return cw, ch, cx, cy, crop_h, scale
 
 
-def _filter(info):
-    cw, ch, cx, cy, crop_h, _ = _geometry(info)
+def _filter(info, region):
+    cw, ch, cx, cy, crop_h, _ = _geometry(info, region)
     return (f"[0:v:0]fps={SAMPLE_FPS},split=2[a][b];"
             f"[a]crop={cw}:{ch}:{cx}:{cy},scale={CROP_W}:{crop_h}[c];"
             f"[b]scale={THUMB_W}:{THUMB_H},pad={CROP_W}:{THUMB_H}[d];"
             f"[c][d]vstack=2,format=bgr24[out]")
 
 
-def detect_badge(crop, scale, height):
+def detect_badge(crop, scale, short_side):
     """Score (0..1) how much the crop looks like the red kill badge, plus its centre."""
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
     h, s, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]
@@ -58,7 +66,7 @@ def detect_badge(crop, scale, height):
     red = cv2.morphologyEx(red, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
     contours, _ = cv2.findContours(red, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    d0 = BADGE_DIAMETER_1080P * (height / 1080.0) * scale
+    d0 = BADGE_DIAMETER_1080P * (short_side / 1080.0) * scale
     min_area = np.pi / 4 * (0.45 * d0) ** 2
     max_area = np.pi / 4 * (1.8 * d0) ** 2
     light = (v >= 170) & (s <= 90)  # the white-ish text inside the badge
@@ -94,9 +102,9 @@ def _workers():
     return max(1, min(4, (os.cpu_count() or 2) // 2))
 
 
-def _scan_chunk(info, start, end, use_hwaccel, cancel, on_frame):
-    """Decode one piece of the video at SAMPLE_FPS. Returns (rows, error_text)."""
-    cw, ch, cx, cy, crop_h, scale = _geometry(info)
+def _scan_chunk(info, region, start, end, use_hwaccel, cancel, on_frame):
+    """Decode one piece of the video at SAMPLE_FPS. Returns (rows, crops, error_text)."""
+    cw, ch, cx, cy, crop_h, scale = _geometry(info, region)
     frame_h = crop_h + THUMB_H
     frame_bytes = CROP_W * frame_h * 3
     cmd = [ffmpeg_path(), "-hide_banner", "-nostdin", "-v", "error"]
@@ -104,7 +112,7 @@ def _scan_chunk(info, start, end, use_hwaccel, cancel, on_frame):
         cmd += ["-hwaccel", "auto"]
     # skip_frame noref: don't decode frames nothing else depends on - we only need 4 per second.
     cmd += ["-skip_frame", "noref", "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", info.path,
-            "-an", "-filter_complex", _filter(info), "-map", "[out]", "-f", "rawvideo", "-"]
+            "-an", "-filter_complex", _filter(info, region), "-map", "[out]", "-f", "rawvideo", "-"]
     proc = popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=frame_bytes * 8)
     rows, crops = [], []
     try:
@@ -116,7 +124,7 @@ def _scan_chunk(info, start, end, use_hwaccel, cancel, on_frame):
                 break
             img = np.frombuffer(buf, np.uint8).reshape(frame_h, CROP_W, 3)
             t = start + len(rows) / SAMPLE_FPS
-            score, bx, by = detect_badge(img[:crop_h], scale, info.height)
+            score, bx, by = detect_badge(img[:crop_h], scale, min(info.width, info.height))
             hsv = cv2.cvtColor(img[crop_h:, :THUMB_W], cv2.COLOR_BGR2HSV)
             rows.append((t, score, cx + bx if bx >= 0 else -1, cy + by if by >= 0 else -1,
                          float(hsv[..., 1].mean()), float(hsv[..., 2].mean())))
@@ -161,7 +169,7 @@ def detections_sheet(crops, path, limit=120):
     return path
 
 
-def scan_segments(info, segments, progress, cancel):
+def scan_segments(info, segments, progress, cancel, region):
     """Sample frames inside each (start, end) segment. Returns arrays sorted by time."""
     chunks = []
     for s0, s1 in segments:
@@ -182,11 +190,11 @@ def scan_segments(info, segments, progress, cancel):
 
     def work(chunk):
         start, end = chunk
-        rows, crops, err = _scan_chunk(info, start, end, state["hwaccel"], cancel, on_frame)
+        rows, crops, err = _scan_chunk(info, region, start, end, state["hwaccel"], cancel, on_frame)
         if not rows and state["hwaccel"]:
             log.warning("No frames with hardware decoding at %.0fs, retrying without it: %s", start, err[-500:])
             state["hwaccel"] = False
-            rows, crops, err = _scan_chunk(info, start, end, False, cancel, on_frame)
+            rows, crops, err = _scan_chunk(info, region, start, end, False, cancel, on_frame)
         if not rows and end - start > 1:
             log.error("No frames decoded for %.1f-%.1f: %s", start, end, err[-1500:])
             raise FriendlyError("Couldn't read the video frames. The file may be damaged.", err[-1500:])

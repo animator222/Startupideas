@@ -1,7 +1,7 @@
 # Deadlock Clipper
 
-Turns your Deadlock recordings into vertical highlight clips (1080x1920) for YouTube Shorts and
-Instagram Reels. Everything runs on your own PC: no accounts, no uploads, no paid services.
+Turns your Deadlock recordings (horizontal 1920x1080 or vertical 1080x1920) into highlight clips:
+vertical 1080x1920 for YouTube Shorts and Instagram Reels, or horizontal 1920x1080 for YouTube. Everything runs on your own PC: no accounts, no uploads, no paid services.
 
 ## First-time setup (about 5 minutes, once)
 
@@ -24,8 +24,14 @@ top-right of the start screen. If something is broken, run `Install.bat` again t
 
 1. **Pick a video.** Drag a recording onto the window, click **Choose a video file...**, or paste
    a YouTube link (local files are better quality and faster).
-2. **Settings.** Choose how many clips (or tick **All highlights** for no limit), how long, the vertical style (click the preview you like),
-   and what counts as a highlight. Your choices are remembered for next time.
+2. **Settings.** Choose how many clips (or tick **All highlights** for no limit), how long,
+   **Export as** vertical (Shorts/Reels) or horizontal (YouTube), the format (click the preview
+   you like), and what counts as a highlight. Your choices are remembered for next time.
+   - **Kill badge area:** the app needs to know where your red KILL badge appears on screen. It
+     has defaults for normal horizontal recordings and for your vertical layout. If kills are
+     missed, press **Set kill badge area...**, find a moment with a kill, draw a box around the
+     badge and press **Check this frame**. It's saved separately for vertical and horizontal
+     videos, so you only do it once per layout.
 3. **Find highlights.** The whole video is checked for your kill badge. The first scan of a
    1-2 hour video takes roughly 5-10 minutes; going back to the same video later is instant
    because the scan is saved.
@@ -37,8 +43,8 @@ top-right of the start screen. If something is broken, run `Install.bat` again t
        to trim, or click anywhere on the timeline to jump there.
      - **Set start here (I)** / **Set end here (O)** trim to the current playback position.
      - **Play clip** plays just the trimmed part. **Show more timeline** lets you extend further.
-     - Choose **blurred background** or **center crop** for each clip. With center crop, drag the
-       box on the video to choose which part of the screen is kept.
+     - Choose **blurred background** or **crop to fill** for each clip. With crop to fill, drag
+       the box on the video to choose which part of the picture is kept.
      - Keyboard: Space = play/pause, arrow keys = 1 second, Shift+arrows = one frame.
    - Tick the clips you want to export (**Select all** / **Select none** help). Only ticked clips
      are exported. **Delete** removes a clip from the list.

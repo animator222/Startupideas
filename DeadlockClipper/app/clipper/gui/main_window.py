@@ -11,7 +11,7 @@ from ..export import export_clips, vertical_filter
 from ..ffmpeg import extract_frame, probe
 from ..highlights import find_events, pick_clips
 from ..paths import CACHE_DIR
-from ..settings import load_settings, save_settings
+from ..settings import badge_region, load_settings, save_settings
 from ..youtube import download
 from .common import show_error, start_task
 from .editor import EditorDialog
@@ -100,9 +100,11 @@ class MainWindow(QMainWindow):
         def previews(progress, cancel):
             t = min(info.duration * 0.4, max(0.0, info.duration - 1))
             out = {}
-            for fmt in ("blur", "crop"):
-                out[fmt] = extract_frame(info.path, t, CACHE_DIR / f"preview_{fmt}.png",
-                                         filter_complex=vertical_filter(fmt))
+            for orientation in ("vertical", "horizontal"):
+                for fmt in ("blur", "crop"):
+                    out[(orientation, fmt)] = extract_frame(
+                        info.path, t, CACHE_DIR / f"preview_{orientation}_{fmt}.png",
+                        filter_complex=vertical_filter(fmt, orientation=orientation))
             return out
 
         start_task(self, previews, on_done=self.setup.set_previews,
@@ -116,7 +118,7 @@ class MainWindow(QMainWindow):
         info = self.info
 
         def work(progress, cancel):
-            analysis = analyze(info, settings.quick_scan, progress, cancel)
+            analysis = analyze(info, settings.quick_scan, badge_region(settings, info), progress, cancel)
             progress(1.0, "Picking the best moments")
             events = find_events(analysis, settings.sensitivity)
             clips = pick_clips(events, settings, info.duration)
@@ -158,7 +160,8 @@ class MainWindow(QMainWindow):
 
     def edit_clip(self, row):
         self._editing = row
-        self.editor.open(self.info, row.clip, row.index, self.settings.vertical_format)
+        self.editor.open(self.info, row.clip, row.index, self.settings.vertical_format,
+                         self.settings.output_orientation)
         self.editor.show()
         self.editor.raise_()
 

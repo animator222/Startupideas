@@ -21,9 +21,10 @@ SMART_SCAN_PERCENTILE = 60  # video is scanned wherever the audio is above this 
 SCAN_PAD_BEFORE, SCAN_PAD_AFTER = 10.0, 12.0
 
 
-def _cache_key(info, quick):
+def _cache_key(info, quick, region):
     st = os.stat(info.path)
-    raw = f"{os.path.abspath(info.path)}|{st.st_size}|{int(st.st_mtime)}|{ANALYSIS_VERSION}|{quick}"
+    region = ",".join(f"{v:.3f}" for v in region)
+    raw = f"{os.path.abspath(info.path)}|{st.st_size}|{int(st.st_mtime)}|{ANALYSIS_VERSION}|{quick}|{region}"
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
@@ -73,9 +74,9 @@ def scan_plan(audio_db, duration, quick):
 DETECTIONS_IMAGE = LOG_DIR / "detections.jpg"
 
 
-def analyze(info, quick, progress, cancel):
-    """progress(fraction 0..1, message)."""
-    keys = [_cache_key(info, False)] + ([_cache_key(info, True)] if quick else [])
+def analyze(info, quick, region, progress, cancel):
+    """progress(fraction 0..1, message). region = kill badge search area (fractions x, y, w, h)."""
+    keys = [_cache_key(info, False, region)] + ([_cache_key(info, True, region)] if quick else [])
     for key in keys:
         cached = _load_cache(key)
         if cached is not None:
@@ -96,10 +97,10 @@ def analyze(info, quick, progress, cancel):
     log.info("Scanning %d parts of the video (%.0f of %.0f seconds)", len(segments), covered, info.duration)
 
     t1 = time.time()
-    vis, crops = vision.scan_segments(info, segments, lambda f, m: progress(0.25 + 0.75 * f, m), cancel)
+    vis, crops = vision.scan_segments(info, segments, lambda f, m: progress(0.25 + 0.75 * f, m), cancel, region)
     log.info("Video pass took %.1fs", time.time() - t1)
 
-    key = _cache_key(info, quick)
+    key = _cache_key(info, quick, region)
     result = {"audio_db": audio_db, "vision": vis, "segments": segments}
     _save_cache(key, result)
     DETECTIONS_IMAGE.unlink(missing_ok=True)
