@@ -48,6 +48,8 @@ class Clip:
     reasons: list = field(default_factory=list)
     takedowns: list = field(default_factory=list)
     focus: float = 0.0  # best moment, used for the thumbnail
+    fmt: str = ""  # per-clip vertical format chosen in the editor; "" = use the setting
+    crop_x: float = 0.5  # center-crop position: 0 = left edge, 0.5 = middle, 1 = right edge
 
     @property
     def length(self):
@@ -253,7 +255,7 @@ def pick_clips(events, settings, duration):
     for c in cands:
         if all(c.end + 1 <= o.start or c.start >= o.end + 1 for o in chosen):
             chosen.append(c)
-        if len(chosen) >= settings.num_clips:
+        if settings.num_clips and len(chosen) >= settings.num_clips:
             break
     chosen.sort(key=lambda c: c.start)
     for c in chosen:

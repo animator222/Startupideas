@@ -23,14 +23,21 @@ To update or repair the app, download the new ZIP, extract it over the old folde
 
 1. **Pick a video.** Drag a recording onto the window, click **Choose a video file...**, or paste
    a YouTube link (local files are better quality and faster).
-2. **Settings.** Choose how many clips, how long, the vertical style (click the preview you like),
+2. **Settings.** Choose how many clips (or tick **All highlights** for no limit), how long, the vertical style (click the preview you like),
    and what counts as a highlight. Your choices are remembered for next time.
 3. **Find highlights.** A 1-2 hour video takes a few minutes. Going back to the same video later
    is instant because the scan is saved.
 4. **Review.** Each suggested clip shows a thumbnail, its time, a score and *why* it was picked.
-   - **Play** opens a small player window with sound.
+   - **Play / Edit** (or click the thumbnail) opens the editor:
+     - The video plays at the top, with **play/pause**, **5 s back/forward** and **frame-by-frame** buttons.
+     - The **timeline** at the bottom shows the clip as a yellow box. Drag its left or right edge
+       to trim, or click anywhere on the timeline to jump there.
+     - **Set start here (I)** / **Set end here (O)** trim to the current playback position.
+     - **Play clip** plays just the trimmed part. **Show more timeline** lets you extend further.
+     - Choose **blurred background** or **center crop** for each clip. With center crop, drag the
+       box on the video to choose which part of the screen is kept.
+     - Keyboard: Space = play/pause, arrow keys = 1 second, Shift+arrows = one frame.
    - **Delete** removes clips you don't want.
-   - Change **Start** / **End** to trim a clip.
    - Move **Fight sensitivity** and press **Re-pick clips** to get a different selection
      without re-scanning.
 5. **Export.** Clips are saved as `deadlock_2026-09-25_clip01.mp4` and so on (the date comes from

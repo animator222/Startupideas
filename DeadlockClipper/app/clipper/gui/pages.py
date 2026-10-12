@@ -7,7 +7,7 @@ import numpy as np
 from PySide6.QtCore import QLineF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QButtonGroup, QCheckBox, QDoubleSpinBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
+    QButtonGroup, QCheckBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
     QLineEdit, QProgressBar, QPushButton, QRadioButton, QScrollArea, QSizePolicy, QSlider, QSpinBox,
     QVBoxLayout, QWidget,
 )
@@ -186,8 +186,11 @@ class SettingsPage(QWidget):
         form = QGridLayout()
         form.setVerticalSpacing(10)
         r = 0
-        self.num = QSpinBox(); self.num.setRange(1, 30)
-        form.addWidget(label("Number of clips"), r, 0); form.addWidget(self.num, r, 1); r += 1
+        self.num = QSpinBox(); self.num.setRange(1, 200)
+        self.all = QCheckBox("All highlights (no limit)")
+        self.all.toggled.connect(lambda on: self.num.setEnabled(not on))
+        nums = QHBoxLayout(); nums.addWidget(self.num); nums.addWidget(self.all); nums.addStretch(1)
+        form.addWidget(label("Number of clips"), r, 0); form.addLayout(nums, r, 1); r += 1
         self.min_len = QSpinBox(); self.min_len.setRange(5, 60); self.min_len.setSuffix(" s")
         self.max_len = QSpinBox(); self.max_len.setRange(5, 60); self.max_len.setSuffix(" s")
         self.min_len.valueChanged.connect(lambda v: self.max_len.setValue(max(v, self.max_len.value())))
@@ -255,7 +258,8 @@ class SettingsPage(QWidget):
         name = Path(info.path).name
         self.video_label.setText(f"{name}  •  {fmt_time(info.duration)}  •  "
                                  f"{info.width}x{info.height} @ {info.fps:.0f} fps")
-        self.num.setValue(settings.num_clips)
+        self.num.setValue(settings.num_clips or 5)
+        self.all.setChecked(settings.num_clips == 0)
         self.max_len.setValue(settings.max_len)
         self.min_len.setValue(settings.min_len)
         self.kills.setChecked(settings.want_kills)
@@ -282,7 +286,7 @@ class SettingsPage(QWidget):
     def current(self):
         return replace(
             self._settings,
-            num_clips=self.num.value(), min_len=self.min_len.value(), max_len=self.max_len.value(),
+            num_clips=0 if self.all.isChecked() else self.num.value(), min_len=self.min_len.value(), max_len=self.max_len.value(),
             vertical_format="crop" if self.opt_crop.radio.isChecked() else "blur",
             want_kills=self.kills.isChecked(), want_multikills=self.multi.isChecked(),
             want_teamfights=self.fights.isChecked(), want_objectives=False,
@@ -398,72 +402,63 @@ class LoudnessGraph(QWidget):
         p.end()
 
 
-class TimeBox(QDoubleSpinBox):
-    def __init__(self, maximum):
-        super().__init__()
-        self.setRange(0, maximum)
-        self.setDecimals(1)
-        self.setSingleStep(0.5)
-        self.setSuffix(" s")
-        self.setFixedWidth(110)
+class ClickableLabel(QLabel):
+    clicked = Signal()
+
+    def mousePressEvent(self, e):
+        self.clicked.emit()
 
 
 class ClipRow(QFrame):
-    play = Signal(object)
+    edit = Signal(object)
     delete = Signal(object)
 
-    def __init__(self, index, clip, duration):
+    def __init__(self, index, clip):
         super().__init__()
         self.setObjectName("card")
         self.clip = clip
+        self.index = index
         lay = QHBoxLayout(self)
-        self.thumb = QLabel()
+        self.thumb = ClickableLabel()
         self.thumb.setFixedSize(192, 108)
+        self.thumb.setCursor(Qt.PointingHandCursor)
+        self.thumb.setToolTip("Click to play and edit")
         self.thumb.setStyleSheet("background: #0d0e11; border-radius: 4px;")
+        self.thumb.clicked.connect(lambda: self.edit.emit(self))
         lay.addWidget(self.thumb)
 
         mid = QVBoxLayout()
         self.title = label("")
         self.title.setStyleSheet("font-weight: 600; background: transparent;")
         mid.addWidget(self.title)
-        reasons = label(" • ".join(clip.reasons), "reason", wrap=True)
+        reasons = label(" \u2022 ".join(clip.reasons), "reason", wrap=True)
         reasons.setStyleSheet("background: transparent;")
         mid.addWidget(reasons)
-        times = QHBoxLayout()
-        self.start = TimeBox(duration); self.start.setValue(clip.start)
-        self.end = TimeBox(duration); self.end.setValue(clip.end)
-        self.length = label("", "subtle")
-        for wdg in (label("Start"), self.start, label("End"), self.end, self.length):
-            times.addWidget(wdg)
-        times.addStretch(1)
-        mid.addLayout(times)
+        self.detail = label("", "subtle")
+        self.detail.setStyleSheet("background: transparent;")
+        mid.addWidget(self.detail)
+        mid.addStretch(1)
         lay.addLayout(mid, 1)
 
         btns = QVBoxLayout()
-        play = button("▶ Play")
-        play.clicked.connect(lambda: self.play.emit(self.clip))
-        rm = button("✕ Delete")
+        edit = button("\u25B6 Play / Edit", primary=True)
+        edit.clicked.connect(lambda: self.edit.emit(self))
+        rm = button("\u2715 Delete")
         rm.clicked.connect(lambda: self.delete.emit(self))
-        btns.addWidget(play); btns.addWidget(rm)
+        btns.addWidget(edit)
+        btns.addWidget(rm)
         lay.addLayout(btns)
+        self.refresh()
 
-        self.index = index
-        self.start.valueChanged.connect(self._times_changed)
-        self.end.valueChanged.connect(self._times_changed)
-        self._times_changed()
-
-    def _times_changed(self):
-        self.clip.start = self.start.value()
-        self.clip.end = self.end.value()
-        length = self.clip.end - self.clip.start
-        bad = length < 3 or length > 60
-        self.length.setText(f"{length:.1f}s" + ("  (must be 3-60 s)" if bad else ""))
-        self.length.setStyleSheet("color: #ff6b6b;" if bad else "")
-        self.title.setText(f"Clip {self.index}   {fmt_time(self.clip.start)} → {fmt_time(self.clip.end)}"
-                           f"   •   score {self.clip.score:g}")
+    def refresh(self):
+        c = self.clip
+        self.title.setText(f"Clip {self.index}   {fmt_time(c.start)} \u2192 {fmt_time(c.end)}"
+                           f"   \u2022   {c.length:.1f}s   \u2022   score {c.score:g}")
+        fmt = {"crop": "Center crop", "blur": "Blurred background"}.get(c.fmt, "")
+        self.detail.setText(f"Edited \u2022 {fmt}" if fmt else "")
 
     def valid(self):
-        return 3 <= self.clip.end - self.clip.start <= 60
+        return 3 <= self.clip.length <= 60
 
     def set_thumb(self, path):
         pix = QPixmap(str(path))
@@ -472,8 +467,8 @@ class ClipRow(QFrame):
 
 
 class ReviewPage(QWidget):
-    repick = Signal(int, int)  # sensitivity, number of clips
-    play = Signal(object)
+    repick = Signal(int, int)  # sensitivity, number of clips (0 = all)
+    edit = Signal(object)  # ClipRow
     export = Signal(list)
     back = Signal()
 
@@ -495,10 +490,14 @@ class ReviewPage(QWidget):
         self.sens = QSlider(Qt.Horizontal); self.sens.setRange(1, 10); self.sens.setFixedWidth(200)
         tune.addWidget(self.sens)
         tune.addWidget(label("Clips"))
-        self.num = QSpinBox(); self.num.setRange(1, 30)
+        self.num = QSpinBox(); self.num.setRange(1, 200)
         tune.addWidget(self.num)
+        self.all = QCheckBox("All highlights")
+        self.all.toggled.connect(lambda on: self.num.setEnabled(not on))
+        tune.addWidget(self.all)
         again = button("Re-pick clips")
-        again.clicked.connect(lambda: self.repick.emit(self.sens.value(), self.num.value()))
+        again.clicked.connect(lambda: self.repick.emit(self.sens.value(),
+                                                      0 if self.all.isChecked() else self.num.value()))
         tune.addWidget(again)
         tune.addStretch(1)
         lay.addLayout(tune)
@@ -522,14 +521,15 @@ class ReviewPage(QWidget):
 
     def show_results(self, info, events, clips, settings):
         self.sens.setValue(settings.sensitivity)
-        self.num.setValue(settings.num_clips)
+        self.all.setChecked(settings.num_clips == 0)
+        self.num.setValue(settings.num_clips or 5)
         for row in self.rows:
             row.setParent(None)
             row.deleteLater()
         self.rows = []
         for i, clip in enumerate(clips, 1):
-            row = ClipRow(i, clip, info.duration)
-            row.play.connect(self.play.emit)
+            row = ClipRow(i, clip)
+            row.edit.connect(self.edit.emit)
             row.delete.connect(self._delete)
             self.list.insertWidget(self.list.count() - 1, row)
             self.rows.append(row)

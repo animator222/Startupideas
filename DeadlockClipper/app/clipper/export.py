@@ -6,18 +6,21 @@ from datetime import datetime
 from pathlib import Path
 
 from .errors import Cancelled, FriendlyError
-from .ffmpeg import ENCODER_ARGS, ffmpeg_path, find_tool, popen, working_encoders
+from .ffmpeg import ENCODER_ARGS, ffmpeg_path, popen, working_encoders
 
 log = logging.getLogger(__name__)
 
 OUT_W, OUT_H = 1080, 1920
 
 
-def vertical_filter(fmt, fps_str=None):
-    """ffmpeg filter graph from input 0 to [v]. fmt: 'crop' or 'blur'."""
+def vertical_filter(fmt, fps_str=None, crop_x=0.5):
+    """ffmpeg filter graph from input 0 to [v]. fmt: 'crop' or 'blur'.
+    crop_x picks which part of the screen a center crop shows (0 = left, 1 = right)."""
     tail = (f",fps={fps_str}" if fps_str else "") + ",format=yuv420p[v]"
     if fmt == "crop":
-        return (f"[0:v:0]crop=trunc(ih*9/16/2)*2:ih,scale={OUT_W}:{OUT_H}:flags=lanczos,setsar=1" + tail)
+        crop_x = min(1.0, max(0.0, crop_x))
+        return (f"[0:v:0]crop=trunc(ih*9/16/2)*2:ih:(iw-ow)*{crop_x:.4f}:0,"
+                f"scale={OUT_W}:{OUT_H}:flags=lanczos,setsar=1" + tail)
     # Full frame in the middle, a blurred, slightly darkened zoomed copy filling the background.
     return (f"[0:v:0]split=2[bgsrc][fgsrc];"
             f"[bgsrc]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,"
@@ -44,11 +47,12 @@ def output_paths(source, out_dir, count):
 
 
 def _encode(info, clip, fmt, out_path, encoder, progress, cancel):
+    fmt = clip.fmt or fmt
     duration = clip.end - clip.start
     cmd = [ffmpeg_path(), "-hide_banner", "-nostdin", "-v", "error", "-y",
            "-progress", "pipe:1", "-nostats",
            "-ss", f"{clip.start:.3f}", "-i", info.path, "-t", f"{duration:.3f}",
-           "-filter_complex", vertical_filter(fmt, info.fps_str), "-map", "[v]"]
+           "-filter_complex", vertical_filter(fmt, info.fps_str, clip.crop_x), "-map", "[v]"]
     if info.has_audio:
         cmd += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"]
     cmd += [*ENCODER_ARGS[encoder], "-pix_fmt", "yuv420p", "-map_metadata", "-1",
@@ -109,16 +113,3 @@ def export_clips(info, clips, settings, progress, cancel):
         written.append(str(path))
     progress(1.0, "Done")
     return written
-
-
-def preview_clip(info, clip):
-    """Play a clip (with sound) in a small ffplay window. Returns the process."""
-    ffplay = find_tool("ffplay")
-    if not ffplay:
-        raise FriendlyError("The clip player (ffplay) is missing. Run Install.bat again to repair the app.")
-    cmd = [ffplay, "-hide_banner", "-loglevel", "error", "-autoexit",
-           "-window_title", f"Clip preview  {clip.start:.1f}s - {clip.end:.1f}s  (close window to stop)",
-           "-x", "960", "-y", "540",
-           "-ss", f"{clip.start:.3f}", "-t", f"{clip.end - clip.start:.3f}", info.path]
-    # Only the console is hidden; ffplay's video window still shows.
-    return popen(cmd)

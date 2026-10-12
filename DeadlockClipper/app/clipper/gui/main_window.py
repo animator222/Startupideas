@@ -7,13 +7,14 @@ from PySide6.QtWidgets import QMainWindow, QStackedWidget
 from .. import APP_NAME, APP_VERSION
 from ..analysis import analyze, write_report
 from ..errors import FriendlyError
-from ..export import export_clips, preview_clip, vertical_filter
+from ..export import export_clips, vertical_filter
 from ..ffmpeg import extract_frame, probe
 from ..highlights import find_events, pick_clips
 from ..paths import CACHE_DIR
 from ..settings import load_settings, save_settings
 from ..youtube import download
 from .common import show_error, start_task
+from .editor import EditorPage
 from .pages import DonePage, HomePage, ProgressPage, ReviewPage, SettingsPage
 
 log = logging.getLogger(__name__)
@@ -29,13 +30,12 @@ class MainWindow(QMainWindow):
         self.analysis = None
         self.events = None
         self.task = None
-        self.player = None
 
         self.stack = QStackedWidget()
         self.setCentralWidget(self.stack)
         self.home, self.setup, self.progress = HomePage(), SettingsPage(), ProgressPage()
-        self.review, self.done = ReviewPage(), DonePage()
-        for page in (self.home, self.setup, self.progress, self.review, self.done):
+        self.review, self.done, self.editor = ReviewPage(), DonePage(), EditorPage()
+        for page in (self.home, self.setup, self.progress, self.review, self.done, self.editor):
             self.stack.addWidget(page)
 
         self.home.file_chosen.connect(self.open_file)
@@ -44,7 +44,9 @@ class MainWindow(QMainWindow):
         self.setup.start.connect(self.run_analysis)
         self.progress.cancel.connect(self._cancel)
         self.review.repick.connect(self.repick)
-        self.review.play.connect(self.play_clip)
+        self.review.edit.connect(self.edit_clip)
+        self.editor.saved.connect(self._clip_saved)
+        self.editor.closed.connect(lambda: self.stack.setCurrentWidget(self.review))
         self.review.export.connect(self.run_export)
         self.review.back.connect(self.go_home)
         self.done.again.connect(self.go_home)
@@ -154,21 +156,23 @@ class MainWindow(QMainWindow):
 
         start_task(self, thumbs, on_done=self.review.set_thumbs)
 
-    def play_clip(self, clip):
-        if self.player and self.player.poll() is None:
-            self.player.kill()
-        try:
-            self.player = preview_clip(self.info, clip)
-        except FriendlyError as e:
-            show_error(self, e.message, e.details)
-        except OSError as e:
-            show_error(self, "Couldn't play the clip.", str(e))
+    def edit_clip(self, row):
+        self._editing = row
+        self.editor.open(self.info, row.clip, row.index, self.settings.vertical_format)
+        self.stack.setCurrentWidget(self.editor)
+
+    def _clip_saved(self, clip):
+        row = self._editing
+        row.refresh()
+        self.stack.setCurrentWidget(self.review)
+        info = self.info
+        start_task(self, lambda progress, cancel: extract_frame(
+            info.path, clip.focus + 0.5, CACHE_DIR / "thumbs" / f"edited_{id(clip)}.jpg", width=384),
+            on_done=row.set_thumb)
 
     # ------------------------------------------------------------ export
 
     def run_export(self, clips):
-        if self.player and self.player.poll() is None:
-            self.player.kill()
         info, settings = self.info, self.settings
 
         def work(progress, cancel):
@@ -183,6 +187,5 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         if self.task:
             self.task.cancel()
-        if self.player and self.player.poll() is None:
-            self.player.kill()
+        self.editor.stop()
         super().closeEvent(event)

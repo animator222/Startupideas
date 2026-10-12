@@ -9,7 +9,7 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class Settings:
-    num_clips: int = 5
+    num_clips: int = 5  # 0 = find all highlights (no limit)
     min_len: int = 15
     max_len: int = 45
     vertical_format: str = "blur"  # "blur" (full frame + blurred background) or "crop" (center crop)
@@ -29,7 +29,7 @@ class Settings:
             self.output_dir = str(videos_folder() / "Deadlock Clips")
 
     def validate(self):
-        self.num_clips = max(1, min(30, int(self.num_clips)))
+        self.num_clips = max(0, min(200, int(self.num_clips)))
         self.max_len = max(5, min(60, int(self.max_len)))
         self.min_len = max(5, min(self.max_len, int(self.min_len)))
         self.sensitivity = max(1, min(10, int(self.sensitivity)))
