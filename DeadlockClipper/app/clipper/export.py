@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .errors import Cancelled, FriendlyError
-from .ffmpeg import ENCODER_ARGS, ffmpeg_path, popen, working_encoders
+from .ffmpeg import ENCODER_ARGS, ffmpeg_path, gpu_decode_args, popen, working_encoders
 
 log = logging.getLogger(__name__)
 
@@ -54,12 +54,14 @@ def output_paths(source, out_dir, count):
     return [out_dir / f"deadlock_{date}_clip{first + i:02d}.mp4" for i in range(count)]
 
 
-def _encode(info, clip, fmt, orientation, out_path, encoder, progress, cancel):
+def _encode(info, clip, fmt, orientation, out_path, encoder, progress, cancel, gpu_decode):
     fmt = clip.fmt or fmt
     duration = clip.end - clip.start
     cmd = [ffmpeg_path(), "-hide_banner", "-nostdin", "-v", "error", "-y",
-           "-progress", "pipe:1", "-nostats",
-           "-ss", f"{clip.start:.3f}", "-i", info.path, "-t", f"{duration:.3f}",
+           "-progress", "pipe:1", "-nostats"]
+    if gpu_decode:
+        cmd += gpu_decode_args(info)
+    cmd += ["-ss", f"{clip.start:.3f}", "-i", info.path, "-t", f"{duration:.3f}",
            "-filter_complex", vertical_filter(fmt, info.fps_str, clip.crop_x, orientation), "-map", "[v]"]
     if info.has_audio:
         cmd += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"]
@@ -102,6 +104,7 @@ def export_clips(info, clips, settings, progress, cancel):
     encoders = list(working_encoders())
     log.info("Exporting %d clips, encoders available: %s", len(clips), encoders)
     paths = output_paths(info.path, out_dir, len(clips))
+    gpu_decode = True
     written = []
     for i, (clip, path) in enumerate(zip(clips, paths)):
         def clip_progress(f, i=i):
@@ -110,7 +113,12 @@ def export_clips(info, clips, settings, progress, cancel):
         last_err = ""
         for encoder in list(encoders):
             ok, last_err = _encode(info, clip, settings.vertical_format, settings.output_orientation, path,
-                                  encoder, clip_progress, cancel)
+                                   encoder, clip_progress, cancel, gpu_decode)
+            if not ok and gpu_decode:
+                log.warning("Export with GPU decoding failed; decoding on the CPU from now on")
+                gpu_decode = False
+                ok, last_err = _encode(info, clip, settings.vertical_format, settings.output_orientation,
+                                       path, encoder, clip_progress, cancel, gpu_decode)
             if ok:
                 log.info("Wrote %s with %s", path, encoder)
                 break

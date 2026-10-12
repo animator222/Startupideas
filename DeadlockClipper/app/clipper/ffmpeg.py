@@ -168,3 +168,30 @@ def ffmpeg_version():
         return run([ffmpeg_path(), "-version"], timeout=15).stdout.splitlines()[0]
     except Exception as e:  # only used for the log
         return f"unknown ({e})"
+
+
+def gpu_decode_args(info):
+    """Input options that let ffmpeg decode on the graphics card.
+
+    For AV1 (what YouTube usually serves) ffmpeg otherwise picks libdav1d, a CPU-only decoder,
+    and silently ignores -hwaccel. Forcing the native "av1" decoder lets it use the GPU. Callers
+    must retry without these options if decoding fails (e.g. a GPU without AV1 support).
+    """
+    args = ["-hwaccel", "auto"]
+    if info.vcodec == "av1" and _gpu_av1_works(info.path):
+        args += ["-c:v", "av1"]
+    return args
+
+
+@lru_cache(maxsize=8)
+def _gpu_av1_works(path):
+    """Decode one frame with the GPU AV1 decoder. Without GPU AV1 support ffmpeg can hang
+    instead of failing, so this runs with a time limit before the real work uses it."""
+    cmd = [ffmpeg_path(), "-hide_banner", "-nostdin", "-v", "error", "-hwaccel", "auto", "-c:v", "av1",
+           "-i", str(path), "-frames:v", "1", "-f", "null", "-"]
+    try:
+        ok = run(cmd, check=False, timeout=20).returncode == 0
+    except (subprocess.TimeoutExpired, OSError):
+        ok = False
+    log.info("AV1 decoding on the graphics card: %s", "yes" if ok else "not available, using the CPU")
+    return ok

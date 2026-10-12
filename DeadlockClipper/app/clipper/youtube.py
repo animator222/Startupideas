@@ -44,6 +44,9 @@ def download(url, progress, cancel):
 
     opts = {
         "format": "bestvideo*+bestaudio/best",
+        # Highest resolution and frame rate first; at equal quality prefer H.264, which every
+        # graphics card can decode (YouTube's AV1/VP9 can fall back to the CPU on some PCs).
+        "format_sort": ["res", "fps", "vcodec:h264"],
         "merge_output_format": "mkv",
         "outtmpl": str(DOWNLOAD_DIR / "%(title).80s [%(id)s].%(ext)s"),
         "ffmpeg_location": str(Path(ffmpeg_path()).parent),

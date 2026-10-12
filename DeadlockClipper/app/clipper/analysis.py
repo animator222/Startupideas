@@ -91,6 +91,7 @@ def analyze(info, quick, region, progress, cancel):
     t0 = time.time()
     audio_db = audio.loudness_curve(info, lambda f, m: progress(0.25 * f, m), cancel)
     log.info("Audio pass took %.1fs", time.time() - t0)
+    log.info("Video codec %s - decoding on the graphics card where possible", info.vcodec)
 
     segments = scan_plan(audio_db, info.duration, quick)
     covered = sum(e - s for s, e in segments)

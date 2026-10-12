@@ -16,7 +16,7 @@ import cv2
 import numpy as np
 
 from .errors import Cancelled, FriendlyError
-from .ffmpeg import ffmpeg_path, popen
+from .ffmpeg import ffmpeg_path, gpu_decode_args, popen
 
 log = logging.getLogger(__name__)
 
@@ -107,7 +107,8 @@ def detect_badge(crop, scale, short_side):
 
 
 CHUNK_SECONDS = 300  # the video is split into 5-minute pieces that are scanned in parallel
-SAVE_SCORE = 0.25  # frames at least this badge-like are saved for the detections picture
+SAVE_SCORE = 0.25
+FIRST_FRAME_TIMEOUT = 60  # seconds a decoder may take to produce its first frame  # frames at least this badge-like are saved for the detections picture
 
 
 def _workers():
@@ -121,12 +122,17 @@ def _scan_chunk(info, region, start, end, use_hwaccel, cancel, on_frame):
     frame_bytes = CROP_W * frame_h * 3
     cmd = [ffmpeg_path(), "-hide_banner", "-nostdin", "-v", "error"]
     if use_hwaccel:
-        cmd += ["-hwaccel", "auto"]
+        cmd += gpu_decode_args(info)
     # skip_frame noref: don't decode frames nothing else depends on - we only need 4 per second.
     cmd += ["-skip_frame", "noref", "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", info.path,
             "-an", "-filter_complex", _filter(info, region), "-map", "[out]", "-f", "rawvideo", "-"]
     proc = popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=frame_bytes * 8)
     rows, crops = [], []
+    # Safety net: if a decoder stalls without producing anything, stop it so the caller can
+    # retry without hardware decoding.
+    watchdog = threading.Timer(FIRST_FRAME_TIMEOUT, lambda: not rows and proc.poll() is None and proc.kill())
+    watchdog.daemon = True
+    watchdog.start()
     try:
         while True:
             if cancel.is_set():
@@ -150,6 +156,7 @@ def _scan_chunk(info, region, start, end, use_hwaccel, cancel, on_frame):
                     crops.append((t, score, small))
             on_frame()
     finally:
+        watchdog.cancel()
         if proc.poll() is None:
             proc.kill()
         err = proc.stderr.read().decode("utf-8", "replace") if proc.stderr else ""
