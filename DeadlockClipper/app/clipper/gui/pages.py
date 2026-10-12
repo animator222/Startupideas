@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from .. import APP_VERSION
 from ..highlights import fmt_time
 from ..paths import LOG_DIR, open_in_explorer, videos_folder
 
@@ -85,7 +86,11 @@ class HomePage(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(40, 30, 40, 30)
         lay.setSpacing(16)
-        lay.addWidget(label("Deadlock Clipper", "title"))
+        title_row = QHBoxLayout()
+        title_row.addWidget(label("Deadlock Clipper", "title"))
+        title_row.addStretch(1)
+        title_row.addWidget(label(f"Version {APP_VERSION}", "subtle"))
+        lay.addLayout(title_row)
         lay.addWidget(label("Turn a Deadlock recording into vertical highlight clips for Shorts and Reels.",
                             "subtle", wrap=True))
 
@@ -219,7 +224,7 @@ class SettingsPage(QWidget):
         form.addLayout(sens, r, 1); r += 1
         form.addWidget(label("Low = only the biggest fights. High = small skirmishes count too.", "subtle", True),
                        r, 0, 1, 2); r += 1
-        self.full = QCheckBox("Scan the whole video (slower; catches kills in quiet moments)")
+        self.full = QCheckBox("Quick scan (faster, but can miss kills during laning or quiet moments)")
         form.addWidget(self.full, r, 0, 1, 2); r += 1
 
         form.addWidget(label("Save clips to"), r, 0)
@@ -269,7 +274,7 @@ class SettingsPage(QWidget):
         self.loud_only.setChecked(settings.want_loud_only)
         self.no_deaths.setChecked(settings.exclude_deaths)
         self.sens.setValue(settings.sensitivity)
-        self.full.setChecked(settings.full_scan)
+        self.full.setChecked(settings.quick_scan)
         self.out_dir.setText(settings.output_dir)
         (self.opt_crop if settings.vertical_format == "crop" else self.opt_blur).radio.setChecked(True)
         for opt in (self.opt_blur, self.opt_crop):
@@ -294,7 +299,7 @@ class SettingsPage(QWidget):
             want_teamfights=self.fights.isChecked(), want_loud_only=self.loud_only.isChecked(),
             want_objectives=False,
             exclude_deaths=self.no_deaths.isChecked(), sensitivity=self.sens.value(),
-            full_scan=self.full.isChecked(), output_dir=self.out_dir.text().strip(),
+            quick_scan=self.full.isChecked(), output_dir=self.out_dir.text().strip(),
         ).validate()
 
     def _start(self):
@@ -518,6 +523,10 @@ class ReviewPage(QWidget):
         pick.addWidget(sel_none)
         pick.addWidget(label("Only ticked clips are exported.", "subtle"))
         pick.addStretch(1)
+        seen = button("See what was detected")
+        seen.setToolTip("A picture of every moment that looked like your kill badge (logs\\detections.jpg)")
+        seen.clicked.connect(self._open_detections)
+        pick.addWidget(seen)
         lay.addLayout(pick)
 
         self.scroll = QScrollArea()
@@ -556,7 +565,7 @@ class ReviewPage(QWidget):
         found = (f"Found {n(len(events.takedowns), 'kill/assist badge')}, {n(len(events.deaths), 'death')} and "
                  f"{n(len(events.fights), 'loud fight')} in {fmt_time(info.duration)} of gameplay.")
         if not clips:
-            found += "  No clips matched - try a higher sensitivity, or tick 'Scan the whole video' in Settings."
+            found += "  No clips matched."
         self.summary.setText(found)
         self.graph.set_data(events, clips, info.duration)
         self._update_export()
@@ -571,6 +580,14 @@ class ReviewPage(QWidget):
         row.setParent(None)
         row.deleteLater()
         self._update_export()
+
+    def _open_detections(self):
+        from ..analysis import DETECTIONS_IMAGE
+        if DETECTIONS_IMAGE.exists():
+            open_in_explorer(DETECTIONS_IMAGE)
+        else:
+            from .common import show_error
+            show_error(self, "Nothing that looked like a kill badge was found in this video.")
 
     def _select(self, on):
         for row in self.rows:

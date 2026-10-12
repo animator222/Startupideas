@@ -16,8 +16,9 @@ Instagram Reels. Everything runs on your own PC: no accounts, no uploads, no pai
 4. A **Deadlock Clipper** shortcut now appears on your desktop. From now on, just double-click
    that. You never need the black window again.
 
-To update or repair the app, download the new ZIP, extract it over the old folder, and run
-`Install.bat` again.
+**Updating:** close the app and double-click **`Update.bat`** in the DeadlockClipper folder.
+It downloads the latest version and keeps your settings. The version number is shown at the
+top-right of the start screen. If something is broken, run `Install.bat` again to repair.
 
 ## Using it
 
@@ -25,8 +26,9 @@ To update or repair the app, download the new ZIP, extract it over the old folde
    a YouTube link (local files are better quality and faster).
 2. **Settings.** Choose how many clips (or tick **All highlights** for no limit), how long, the vertical style (click the preview you like),
    and what counts as a highlight. Your choices are remembered for next time.
-3. **Find highlights.** A 1-2 hour video takes a few minutes. Going back to the same video later
-   is instant because the scan is saved.
+3. **Find highlights.** The whole video is checked for your kill badge. The first scan of a
+   1-2 hour video takes roughly 5-10 minutes; going back to the same video later is instant
+   because the scan is saved.
 4. **Review.** Each suggested clip shows a thumbnail, its time, a score and *why* it was picked.
    - **Play / Edit** (or click the thumbnail) opens the editor in its own window. Closing that
      window (X, Esc or Cancel) just discards your changes; the app stays open.
@@ -60,8 +62,12 @@ fights where no kill was seen* if you also want big fights you weren't credited 
 pick up creep farming).
 
 Loudness is compared with how loud *that* match normally is, so farming noise doesn't count
-as a fight. By default only the louder parts of the video are scanned for kill badges, which
-is much faster. Tick **Scan the whole video** if you think it misses quiet kills.
+as a fight. **Quick scan** (off by default) only checks the louder parts of the video for kill
+badges. It's faster, but it can miss kills during laning, so leave it off unless you're in a hurry.
+
+**See what was detected** (on the review screen) opens a picture of every moment that looked
+like your kill badge, with its time. Green numbers counted as kills; orange ones were close but
+not counted. Paste that picture into the chat if kills are missing or wrong.
 
 ## If something goes wrong: logs
 
@@ -71,8 +77,10 @@ The logs are in the **`logs`** folder inside the DeadlockClipper folder:
 | File | What it's for |
 |---|---|
 | `logs\deadlock_clipper.log` | Main log. **Send this one when reporting a problem.** |
+| `logs\detections.jpg` | Picture of everything that looked like your kill badge. Paste it into the chat when kills are missed or wrong. |
 | `logs\last_analysis.txt` | What was detected in the last video (kill times, deaths, fights, chosen clips). Send this when a pick was good or bad, so detection can be tuned. |
 | `logs\install.log` | Log from `Install.bat`, if setup failed. |
+| `logs\update.log` | Log from `Update.bat`, if updating failed. |
 | `logs\crash.log` | Only exists if the app crashed hard. |
 
 To share a log: open the file (it opens in Notepad), press **Ctrl+A** then **Ctrl+C**, and paste

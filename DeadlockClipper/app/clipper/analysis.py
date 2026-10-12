@@ -7,21 +7,23 @@ import time
 
 import numpy as np
 
-from . import audio, vision
+from . import APP_VERSION, audio, vision
 from .audio import HOP
 from .highlights import _runs, fmt_time
-from .paths import ANALYSIS_REPORT, CACHE_DIR
+import shutil
+
+from .paths import ANALYSIS_REPORT, CACHE_DIR, LOG_DIR
 
 log = logging.getLogger(__name__)
 
-ANALYSIS_VERSION = 1
+ANALYSIS_VERSION = 2  # bumped: v1 skipped quiet parts of the match by default
 SMART_SCAN_PERCENTILE = 60  # video is scanned wherever the audio is above this loudness
 SCAN_PAD_BEFORE, SCAN_PAD_AFTER = 10.0, 12.0
 
 
-def _cache_key(info, full_scan):
+def _cache_key(info, quick):
     st = os.stat(info.path)
-    raw = f"{os.path.abspath(info.path)}|{st.st_size}|{int(st.st_mtime)}|{ANALYSIS_VERSION}|{full_scan}"
+    raw = f"{os.path.abspath(info.path)}|{st.st_size}|{int(st.st_mtime)}|{ANALYSIS_VERSION}|{quick}"
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
@@ -48,10 +50,10 @@ def _save_cache(key, result):
         log.exception("Could not write cache")
 
 
-def scan_plan(audio_db, duration, full_scan):
-    """Which parts of the video to look at. Kills nearly always come with gunfire,
-    so by default only the louder parts (plus padding) are decoded."""
-    if full_scan:
+def scan_plan(audio_db, duration, quick):
+    """Which parts of the video to look at. Normally all of it. Quick scan only looks at the
+    louder parts - faster, but it can miss kills in noisy-but-steady phases like laning."""
+    if not quick:
         return [(0.0, duration)]
     _, sustained = audio.intensity(audio_db)
     level = np.percentile(sustained, SMART_SCAN_PERCENTILE)
@@ -68,12 +70,20 @@ def scan_plan(audio_db, duration, full_scan):
     return segments
 
 
-def analyze(info, full_scan, progress, cancel):
+DETECTIONS_IMAGE = LOG_DIR / "detections.jpg"
+
+
+def analyze(info, quick, progress, cancel):
     """progress(fraction 0..1, message)."""
-    for key in (_cache_key(info, True), _cache_key(info, full_scan)):
+    keys = [_cache_key(info, False)] + ([_cache_key(info, True)] if quick else [])
+    for key in keys:
         cached = _load_cache(key)
         if cached is not None:
             log.info("Using cached analysis %s", key)
+            sheet = CACHE_DIR / f"{key}_detections.jpg"
+            DETECTIONS_IMAGE.unlink(missing_ok=True)
+            if sheet.exists():
+                shutil.copyfile(sheet, DETECTIONS_IMAGE)
             progress(1.0, "Using saved analysis")
             return cached
 
@@ -81,25 +91,34 @@ def analyze(info, full_scan, progress, cancel):
     audio_db = audio.loudness_curve(info, lambda f, m: progress(0.25 * f, m), cancel)
     log.info("Audio pass took %.1fs", time.time() - t0)
 
-    segments = scan_plan(audio_db, info.duration, full_scan)
+    segments = scan_plan(audio_db, info.duration, quick)
     covered = sum(e - s for s, e in segments)
     log.info("Scanning %d parts of the video (%.0f of %.0f seconds)", len(segments), covered, info.duration)
 
     t1 = time.time()
-    vis = vision.scan_segments(info, segments, lambda f, m: progress(0.25 + 0.75 * f, m), cancel)
+    vis, crops = vision.scan_segments(info, segments, lambda f, m: progress(0.25 + 0.75 * f, m), cancel)
     log.info("Video pass took %.1fs", time.time() - t1)
 
+    key = _cache_key(info, quick)
     result = {"audio_db": audio_db, "vision": vis, "segments": segments}
-    _save_cache(_cache_key(info, full_scan), result)
+    _save_cache(key, result)
+    DETECTIONS_IMAGE.unlink(missing_ok=True)
+    try:
+        if vision.detections_sheet(crops, CACHE_DIR / f"{key}_detections.jpg"):
+            shutil.copyfile(CACHE_DIR / f"{key}_detections.jpg", DETECTIONS_IMAGE)
+    except Exception:
+        log.exception("Could not save detections picture")
     return result
 
 
-def write_report(info, events, clips, settings):
+def write_report(info, events, clips, settings, segments=None):
     """Human-readable summary for tuning - the user can send this file back to us."""
     lines = [
         f"Video: {info.path}",
         f"Length: {fmt_time(info.duration)}  {info.width}x{info.height} @ {info.fps:.2f} fps, audio={info.has_audio}",
         f"Settings: {json.dumps(settings.__dict__)}",
+        f"App version: {APP_VERSION}",
+        f"Scanned for kill badges: {fmt_time(sum(e - s for s, e in segments or []))} of {fmt_time(info.duration)}",
         "",
         f"Kill/assist badges found ({len(events.takedowns)}): "
         + ", ".join(fmt_time(t) for t in events.takedowns),

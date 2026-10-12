@@ -7,7 +7,10 @@ Only two small images per sampled frame are looked at:
 ffmpeg decodes, samples (4 frames per second) and crops; Python only sees small images.
 """
 import logging
+import os
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import cv2
 import numpy as np
@@ -83,66 +86,129 @@ def detect_badge(crop, scale, height):
     return best
 
 
-def scan_segments(info, segments, progress, cancel):
-    """Sample frames inside each (start, end) segment. Returns arrays sorted by time."""
+CHUNK_SECONDS = 300  # the video is split into 5-minute pieces that are scanned in parallel
+SAVE_SCORE = 0.25  # frames at least this badge-like are saved for the detections picture
+
+
+def _workers():
+    return max(1, min(4, (os.cpu_count() or 2) // 2))
+
+
+def _scan_chunk(info, start, end, use_hwaccel, cancel, on_frame):
+    """Decode one piece of the video at SAMPLE_FPS. Returns (rows, error_text)."""
     cw, ch, cx, cy, crop_h, scale = _geometry(info)
     frame_h = crop_h + THUMB_H
     frame_bytes = CROP_W * frame_h * 3
-    total = sum(e - s for s, e in segments) or 1.0
-    done = 0.0
-    times, scores, xs, ys, sats, vals = [], [], [], [], [], []
-    use_hwaccel = True
+    cmd = [ffmpeg_path(), "-hide_banner", "-nostdin", "-v", "error"]
+    if use_hwaccel:
+        cmd += ["-hwaccel", "auto"]
+    # skip_frame noref: don't decode frames nothing else depends on - we only need 4 per second.
+    cmd += ["-skip_frame", "noref", "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", info.path,
+            "-an", "-filter_complex", _filter(info), "-map", "[out]", "-f", "rawvideo", "-"]
+    proc = popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=frame_bytes * 8)
+    rows, crops = [], []
+    try:
+        while True:
+            if cancel.is_set():
+                raise Cancelled()
+            buf = proc.stdout.read(frame_bytes)
+            if len(buf) < frame_bytes:
+                break
+            img = np.frombuffer(buf, np.uint8).reshape(frame_h, CROP_W, 3)
+            t = start + len(rows) / SAMPLE_FPS
+            score, bx, by = detect_badge(img[:crop_h], scale, info.height)
+            hsv = cv2.cvtColor(img[crop_h:, :THUMB_W], cv2.COLOR_BGR2HSV)
+            rows.append((t, score, cx + bx if bx >= 0 else -1, cy + by if by >= 0 else -1,
+                         float(hsv[..., 1].mean()), float(hsv[..., 2].mean())))
+            if score >= SAVE_SCORE:
+                small = img[:crop_h:2, ::2].copy()
+                if crops and t - crops[-1][0] <= 2.5:
+                    if score > crops[-1][1]:  # keep the clearest frame of each pop-up
+                        crops[-1] = (crops[-1][0], score, small)
+                elif len(crops) < 80:
+                    crops.append((t, score, small))
+            on_frame()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        err = proc.stderr.read().decode("utf-8", "replace") if proc.stderr else ""
+        proc.wait()
+    return rows, crops, err
 
-    for seg_start, seg_end in segments:
-        for attempt in (0, 1):
-            cmd = [ffmpeg_path(), "-hide_banner", "-nostdin", "-v", "error"]
-            if use_hwaccel:
-                cmd += ["-hwaccel", "auto"]
-            cmd += ["-ss", f"{seg_start:.3f}", "-t", f"{seg_end - seg_start:.3f}", "-i", info.path,
-                    "-an", "-filter_complex", _filter(info), "-map", "[out]",
-                    "-f", "rawvideo", "-"]
-            proc = popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=frame_bytes * 8)
-            count = 0
-            try:
-                while True:
-                    if cancel.is_set():
-                        raise Cancelled()
-                    buf = proc.stdout.read(frame_bytes)
-                    if len(buf) < frame_bytes:
-                        break
-                    img = np.frombuffer(buf, np.uint8).reshape(frame_h, CROP_W, 3)
-                    t = seg_start + count / SAMPLE_FPS
-                    score, bx, by = detect_badge(img[:crop_h], scale, info.height)
-                    thumb = img[crop_h:, :THUMB_W]
-                    hsv = cv2.cvtColor(thumb, cv2.COLOR_BGR2HSV)
-                    times.append(t)
-                    scores.append(score)
-                    xs.append(cx + bx if bx >= 0 else -1)
-                    ys.append(cy + by if by >= 0 else -1)
-                    sats.append(float(hsv[..., 1].mean()))
-                    vals.append(float(hsv[..., 2].mean()))
-                    count += 1
-                    if count % 40 == 0:
-                        progress(min(1.0, (done + count / SAMPLE_FPS) / total), "Watching for your kills")
-            finally:
-                if proc.poll() is None:
-                    proc.kill()
-                err = proc.stderr.read().decode("utf-8", "replace") if proc.stderr else ""
-                proc.wait()
-            if count == 0 and use_hwaccel and attempt == 0:
-                log.warning("No frames with hardware decoding, retrying without it: %s", err[-500:])
-                use_hwaccel = False
-                continue
-            if count == 0 and seg_end - seg_start > 1:
-                log.error("No frames decoded for %.1f-%.1f: %s", seg_start, seg_end, err[-1500:])
-                raise FriendlyError("Couldn't read the video frames. The file may be damaged.", err[-1500:])
-            break
-        done += seg_end - seg_start
-        progress(min(1.0, done / total), "Watching for your kills")
 
-    order = np.argsort(times, kind="stable")
-    arr = lambda a: np.asarray(a, dtype=np.float32)[order]  # noqa: E731
+def detections_sheet(crops, path, limit=120):
+    """One picture showing everything that looked like a kill badge, for tuning."""
+    if not crops:
+        return None
+    crops = sorted(crops, key=lambda c: c[0])
+    if len(crops) > limit:  # keep the most badge-like ones
+        crops = sorted(sorted(crops, key=lambda c: -c[1])[:limit], key=lambda c: c[0])
+    th, tw = crops[0][2].shape[:2]
+    cols = 6
+    rows = (len(crops) + cols - 1) // cols
+    sheet = np.full((rows * (th + 22), cols * tw, 3), 24, np.uint8)
+    for i, (t, score, img) in enumerate(crops):
+        r, c = divmod(i, cols)
+        y, x = r * (th + 22), c * tw
+        sheet[y:y + th, x:x + tw] = img[:th, :tw]
+        m, s = divmod(int(t), 60)
+        h, m = divmod(m, 60)
+        stamp = f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+        color = (80, 220, 80) if score >= 0.5 else (60, 160, 240)
+        cv2.putText(sheet, f"{stamp}  {score:.2f}", (x + 4, y + th + 16),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+    cv2.imwrite(str(path), sheet, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    return path
+
+
+def scan_segments(info, segments, progress, cancel):
+    """Sample frames inside each (start, end) segment. Returns arrays sorted by time."""
+    chunks = []
+    for s0, s1 in segments:
+        t = s0
+        while t < s1 - 0.01:
+            chunks.append((t, min(s1, t + CHUNK_SECONDS)))
+            t += CHUNK_SECONDS
+    total_frames = max(1, int(sum(e - s for s, e in chunks) * SAMPLE_FPS))
+    lock = threading.Lock()
+    state = {"frames": 0, "hwaccel": True}
+
+    def on_frame():
+        with lock:
+            state["frames"] += 1
+            n = state["frames"]
+        if n % 40 == 0:
+            progress(min(1.0, n / total_frames), "Watching for your kills")
+
+    def work(chunk):
+        start, end = chunk
+        rows, crops, err = _scan_chunk(info, start, end, state["hwaccel"], cancel, on_frame)
+        if not rows and state["hwaccel"]:
+            log.warning("No frames with hardware decoding at %.0fs, retrying without it: %s", start, err[-500:])
+            state["hwaccel"] = False
+            rows, crops, err = _scan_chunk(info, start, end, False, cancel, on_frame)
+        if not rows and end - start > 1:
+            log.error("No frames decoded for %.1f-%.1f: %s", start, end, err[-1500:])
+            raise FriendlyError("Couldn't read the video frames. The file may be damaged.", err[-1500:])
+        return rows, crops
+
+    workers = _workers()
+    log.info("Scanning %d pieces with %d parallel decoders", len(chunks), workers)
+    rows, crops = [], []
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(work, c) for c in chunks]
+        try:
+            for f in futures:
+                r, c = f.result()
+                rows += r
+                crops += c
+        except BaseException:
+            cancel.set()  # stop the other decoders too
+            raise
+
+    rows.sort(key=lambda r: r[0])
+    arr = np.asarray(rows, dtype=np.float32).reshape(-1, 6)
     log.info("Vision scan: %d frames sampled, %d with a badge-like shape",
-             len(times), int((arr(scores) >= 0.5).sum()) if times else 0)
-    return {"t": arr(times), "badge": arr(scores), "bx": arr(xs), "by": arr(ys),
-            "sat": arr(sats), "val": arr(vals)}
+             len(arr), int((arr[:, 1] >= 0.5).sum()))
+    return {"t": arr[:, 0], "badge": arr[:, 1], "bx": arr[:, 2], "by": arr[:, 3],
+            "sat": arr[:, 4], "val": arr[:, 5]}, crops

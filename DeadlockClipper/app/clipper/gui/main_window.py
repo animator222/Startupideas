@@ -116,11 +116,11 @@ class MainWindow(QMainWindow):
         info = self.info
 
         def work(progress, cancel):
-            analysis = analyze(info, settings.full_scan, progress, cancel)
+            analysis = analyze(info, settings.quick_scan, progress, cancel)
             progress(1.0, "Picking the best moments")
             events = find_events(analysis, settings.sensitivity)
             clips = pick_clips(events, settings, info.duration)
-            write_report(info, events, clips, settings)
+            write_report(info, events, clips, settings, analysis["segments"])
             return analysis, events, clips
 
         def done(result):
@@ -134,7 +134,7 @@ class MainWindow(QMainWindow):
         save_settings(self.settings)
         self.events = find_events(self.analysis, self.settings.sensitivity)
         clips = pick_clips(self.events, self.settings, self.info.duration)
-        write_report(self.info, self.events, clips, self.settings)
+        write_report(self.info, self.events, clips, self.settings, self.analysis["segments"])
         self.show_review(clips)
 
     def show_review(self, clips):

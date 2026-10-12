@@ -21,7 +21,7 @@ class Settings:
     exclude_deaths: bool = True
     output_dir: str = ""
     sensitivity: int = 5  # 1 = only the biggest fights, 10 = small skirmishes too
-    full_scan: bool = False  # scan every part of the video, not just the loud parts
+    quick_scan: bool = False  # only scan the louder parts of the video (faster, can miss kills)
     pre_roll: float = 4.0  # seconds of context before the action
     post_roll: float = 3.0  # seconds after the action
 
