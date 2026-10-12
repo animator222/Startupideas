@@ -180,6 +180,7 @@ class SettingsPage(QWidget):
     start = Signal(object)  # Settings
     back = Signal()
     zoom_changed = Signal(float)  # new zoom level: the zoom preview needs re-making
+    layout_changed = Signal()  # the stacked layout preview needs re-making
 
     def __init__(self):
         super().__init__()
@@ -261,12 +262,21 @@ class SettingsPage(QWidget):
         self.opt_blur = FormatOption("Full frame + blurred background", "Shows the whole picture.")
         self.opt_zoom = FormatOption("Zoomed gameplay + blurred background",
                                      "Gameplay is bigger; its edges are cut off.")
+        self.opt_layout = FormatOption("Stacked layout", "Webcam on top, gameplay, items at the bottom.")
         group = QButtonGroup(self)
-        group.addButton(self.opt_blur.radio); group.addButton(self.opt_zoom.radio)
-        opts.addWidget(self.opt_blur); opts.addWidget(self.opt_zoom)
+        for opt in (self.opt_blur, self.opt_zoom, self.opt_layout):
+            group.addButton(opt.radio)
+            opts.addWidget(opt)
         right.addLayout(opts)
+        layout_row = QHBoxLayout()
+        self.layout_btn = button("Set up layout...")
+        self.layout_btn.clicked.connect(self._set_layout)
+        self.layout_lbl = label("", "subtle", wrap=True)
+        layout_row.addWidget(self.layout_btn)
+        layout_row.addWidget(self.layout_lbl, 1)
+        right.addLayout(layout_row)
         zoom_row = QHBoxLayout()
-        zoom_row.addWidget(label("Zoom"))
+        zoom_row.addWidget(label("Zoom (gameplay)"))
         self.zoom = QSlider(Qt.Horizontal)
         self.zoom.setRange(110, 250)
         self.zoom.setSingleStep(5)
@@ -316,21 +326,53 @@ class SettingsPage(QWidget):
         self.sens.setValue(settings.sensitivity)
         self.full.setChecked(settings.quick_scan)
         self.out_dir.setText(settings.output_dir)
-        (self.opt_zoom if settings.vertical_format == "zoom" else self.opt_blur).radio.setChecked(True)
+        {"zoom": self.opt_zoom, "layout": self.opt_layout}.get(settings.vertical_format, self.opt_blur).radio.setChecked(True)
         self.zoom.setValue(int(round(settings.zoom_level * 100)))
         self._info = info
         self._previews = {}
         (self.out_horizontal if settings.output_orientation == "horizontal" else self.out_vertical).setChecked(True)
         self._orientation_changed()
         self._update_badge_label()
+        self._update_layout_label()
+
+    def _update_layout_label(self):
+        from ..settings import layout_for
+        lay = layout_for(self._settings, self._info)
+        if not lay:
+            self.layout_lbl.setText("Not set up yet for this video shape - press 'Set up layout'.")
+        else:
+            parts = ["gameplay"] + [n for k, n in (("cam", "webcam"), ("items", "items")) if lay.get(k)]
+            self.layout_lbl.setText("Using: " + ", ".join(parts))
+
+    def _set_layout(self):
+        from ..settings import layout_for, save_settings
+        from .layout_area import LayoutDialog
+        dlg = LayoutDialog(self)
+        dlg.open_video(self._info, layout_for(self._settings, self._info))
+        if dlg.exec() == QDialog.Accepted:
+            lay = dlg.get_layout()
+            if self._info.height > self._info.width:
+                self._settings.layout_portrait = lay
+            else:
+                self._settings.layout_landscape = lay
+            save_settings(self._settings)
+            log.info("Stacked layout set to %s", lay)
+            self._update_layout_label()
+            self.opt_layout.radio.setChecked(True)
+            self.layout_changed.emit()
 
     def _orientation(self):
         return "horizontal" if self.out_horizontal.isChecked() else "vertical"
 
     def _orientation_changed(self, *_):
         o = self._orientation()
-        for opt in (self.opt_blur, self.opt_zoom):
+        for opt in (self.opt_blur, self.opt_zoom, self.opt_layout):
             opt.set_shape(o)
+        # The stacked layout is made for vertical clips.
+        self.opt_layout.setEnabled(o == "vertical")
+        self.layout_btn.setEnabled(o == "vertical")
+        if o != "vertical" and self.opt_layout.radio.isChecked():
+            self.opt_zoom.radio.setChecked(True)
         info = getattr(self, "_info", None)
         same = info is not None and (info.height > info.width) == (o == "vertical") and \
             abs(info.width / info.height - (9 / 16 if o == "vertical" else 16 / 9)) < 0.02
@@ -346,6 +388,10 @@ class SettingsPage(QWidget):
         if (o, "blur") in self._previews:
             self.opt_blur.set_image(self._previews[(o, "blur")])
             self.opt_zoom.set_image(self._previews[(o, "zoom")])
+        if o == "vertical" and ("vertical", "layout") in self._previews:
+            self.opt_layout.set_image(self._previews[("vertical", "layout")])
+        elif o != "vertical":
+            self.opt_layout.image.setText("Vertical only")
 
     def _update_badge_label(self):
         info = self._info
@@ -381,7 +427,8 @@ class SettingsPage(QWidget):
         return replace(
             self._settings,
             num_clips=0 if self.all.isChecked() else self.num.value(), min_len=self.min_len.value(), max_len=self.max_len.value(),
-            vertical_format="zoom" if self.opt_zoom.radio.isChecked() else "blur",
+            vertical_format=("layout" if self.opt_layout.radio.isChecked() else
+                             "zoom" if self.opt_zoom.radio.isChecked() else "blur"),
             zoom_level=self.zoom.value() / 100,
             output_orientation=self._orientation(),
             want_kills=self.kills.isChecked(), want_multikills=self.multi.isChecked(),
@@ -556,7 +603,7 @@ class ClipRow(QFrame):
         self.title.setText(f"Clip {self.index}   {fmt_time(c.start)} \u2192 {fmt_time(c.end)}"
                            f"   \u2022   {c.length:.1f}s   \u2022   score {c.score:g}")
         fmt = {"zoom": "Zoomed" + (f" {round(c.zoom * 100)}%" if c.zoom else ""),
-               "blur": "Full frame"}.get(c.fmt, "")
+               "layout": "Stacked layout", "blur": "Full frame"}.get(c.fmt, "")
         self.detail.setText(f"Edited \u2022 {fmt}" if fmt else "")
 
     def valid(self):

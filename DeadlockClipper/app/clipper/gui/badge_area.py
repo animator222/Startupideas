@@ -21,19 +21,29 @@ class RegionBox(QGraphicsObject):
     drag anywhere outside to draw a new box."""
     HANDLE = 0.035  # corner handle size, as a fraction of the frame's short side
 
-    def __init__(self):
+    def __init__(self, title="", color="#f0b35a", dim=True):
         super().__init__()
         self.size = QSizeF(16, 9)
         self.rect = QRectF(0, 0, 1, 1)
+        self.title, self.color = title, QColor(color)
+        self.dim = dim  # darken everything outside the box (single-box mode, can draw a new box)
         self._mode = None
         self.setAcceptHoverEvents(True)
 
     def boundingRect(self):
-        return QRectF(QPointF(0, 0), self.size)
+        if self.dim:
+            return QRectF(QPointF(0, 0), self.size)
+        m = 2 * self.HANDLE * min(self.size.width(), self.size.height())
+        return self.rect.normalized().adjusted(-m, -m * 2, m, m)
+
+    def _changed(self):
+        if not self.dim:
+            self.prepareGeometryChange()
 
     def set_region(self, region):
         w, h = self.size.width(), self.size.height()
         x, y, rw, rh = region
+        self._changed()
         self.rect = QRectF(x * w, y * h, rw * w, rh * h)
         self.update()
 
@@ -49,14 +59,25 @@ class RegionBox(QGraphicsObject):
     def paint(self, p, *_):
         w, h = self.size.width(), self.size.height()
         b = self.rect.normalized()
-        dim = QColor(0, 0, 0, 140)
-        p.fillRect(QRectF(0, 0, w, b.top()), dim)
-        p.fillRect(QRectF(0, b.bottom(), w, h - b.bottom()), dim)
-        p.fillRect(QRectF(0, b.top(), b.left(), b.height()), dim)
-        p.fillRect(QRectF(b.right(), b.top(), w - b.right(), b.height()), dim)
-        p.setPen(QPen(QColor("#f0b35a"), max(2.0, min(w, h) / 250)))
+        if self.dim:
+            dim = QColor(0, 0, 0, 140)
+            p.fillRect(QRectF(0, 0, w, b.top()), dim)
+            p.fillRect(QRectF(0, b.bottom(), w, h - b.bottom()), dim)
+            p.fillRect(QRectF(0, b.top(), b.left(), b.height()), dim)
+            p.fillRect(QRectF(b.right(), b.top(), w - b.right(), b.height()), dim)
+        else:
+            fill = QColor(self.color)
+            fill.setAlpha(40)
+            p.fillRect(b, fill)
+        p.setPen(QPen(self.color, max(2.0, min(w, h) / 250)))
         p.drawRect(b)
-        p.fillRect(self._handle(), QColor("#f0b35a"))
+        p.fillRect(self._handle(), self.color)
+        if self.title:
+            font = p.font()
+            font.setPixelSize(max(12, int(min(w, h) / 30)))
+            font.setBold(True)
+            p.setFont(font)
+            p.drawText(b.adjusted(8, 4, 0, 0), Qt.AlignLeft | Qt.AlignTop, self.title)
 
     def hoverMoveEvent(self, e):
         pos = e.pos()
@@ -73,9 +94,11 @@ class RegionBox(QGraphicsObject):
             self._mode = ("resize", pos, QRectF(self.rect))
         elif self.rect.contains(pos):
             self._mode = ("move", pos, QRectF(self.rect))
-        else:
+        elif self.dim:
             self._mode = ("draw", pos, None)
             self.rect = QRectF(pos, pos)
+        else:
+            e.ignore()
 
     def mouseMoveEvent(self, e):
         if not self._mode:
@@ -84,6 +107,7 @@ class RegionBox(QGraphicsObject):
         pos = e.pos()
         w, h = self.size.width(), self.size.height()
         pos = QPointF(min(max(pos.x(), 0), w), min(max(pos.y(), 0), h))
+        self._changed()
         if kind == "move":
             r = orig.translated(pos - start)
             r.moveLeft(min(max(r.left(), 0), w - r.width()))
@@ -97,6 +121,7 @@ class RegionBox(QGraphicsObject):
 
     def mouseReleaseEvent(self, e):
         self._mode = None
+        self._changed()
         self.rect = self.rect.normalized()
         min_side = 0.03 * min(self.size.width(), self.size.height())
         if self.rect.width() < min_side or self.rect.height() < min_side:
@@ -187,6 +212,7 @@ class BadgeAreaDialog(QDialog):
         if self._prime and self.player.playbackState() == QMediaPlayer.PlayingState:
             self._prime = False
             self.player.pause()
+            self.player.setPosition(ms)  # make sure the paused frame is drawn
         if not self.slider.isSliderDown():
             self.slider.setValue(ms)
         self.time_lbl.setText(f"{fmt_time(ms / 1000)} / {fmt_time(self.info.duration)}")

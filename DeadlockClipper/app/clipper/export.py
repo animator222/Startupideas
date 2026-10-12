@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .errors import Cancelled, FriendlyError
+from .settings import layout_for
 from .ffmpeg import ENCODER_ARGS, ffmpeg_path, gpu_decode_args, popen, working_encoders
 
 log = logging.getLogger(__name__)
@@ -37,6 +38,78 @@ def vertical_filter(fmt, fps_str=None, pan_x=0.5, orientation="vertical", zoom=1
             f"[bg][fg]overlay=(W-w)/2:(H-h)/2" + tail)
 
 
+LAYOUT_CAM_MAX = 0.30  # webcam panel uses at most this much of the output height
+LAYOUT_ITEMS_MAX = 0.22  # items panel at most this much
+
+
+def _even(v):
+    return max(2, int(v) // 2 * 2)
+
+
+def layout_filter(info, layout, fps_str=None, zoom=1.0, pan_x=0.5, pan_y=0.5):
+    """Vertical 1080x1920 "stacked" layout: webcam on top, gameplay in the middle, items at the
+    bottom, on a blurred background. layout = {"game": [x, y, w, h], "cam": [...] or None,
+    "items": [...] or None}, boxes as fractions of the source frame."""
+    ow, oh = OUTPUT_SIZES["vertical"]
+
+    def box(r):
+        x, y, w, h = r
+        bw, bh = _even(w * info.width), _even(h * info.height)
+        bx = min(_even(x * info.width), info.width - bw)
+        by = min(_even(y * info.height), info.height - bh)
+        return bw, bh, max(0, bx), max(0, by)
+
+    def fit(bw, bh, max_w, max_h):
+        s = min(max_w / bw, max_h / bh)
+        return _even(bw * s), _even(bh * s)
+
+    cam, items = layout.get("cam"), layout.get("items")
+    names = ["bgsrc", "g"] + (["c"] if cam else []) + (["i"] if items else [])
+    gw, gh, gx, gy = box(layout["game"])
+    bw, bh = ow // 4, oh // 4
+    graph = (f"[0:v:0]split={len(names)}" + "".join(f"[{n}]" for n in names) + ";"
+             f"[bgsrc]crop={gw}:{gh}:{gx}:{gy},scale={bw}:{bh}:force_original_aspect_ratio=increase,"
+             f"crop={bw}:{bh},boxblur=10:2,eq=brightness=-0.06,scale={ow}:{oh},setsar=1[bg];")
+    top, bottom, overlays = 0, oh, []
+    if cam:
+        w, h, x, y = box(cam)
+        cw, ch = fit(w, h, ow, oh * LAYOUT_CAM_MAX)
+        graph += f"[c]crop={w}:{h}:{x}:{y},scale={cw}:{ch}:flags=lanczos,setsar=1[cs];"
+        overlays.append(("cs", (ow - cw) // 2, 0))
+        top = ch
+    if items:
+        w, h, x, y = box(items)
+        iw, ih = fit(w, h, ow, oh * LAYOUT_ITEMS_MAX)
+        graph += f"[i]crop={w}:{h}:{x}:{y},scale={iw}:{ih}:flags=lanczos,setsar=1[is];"
+        overlays.append(("is", (ow - iw) // 2, oh - ih))
+        bottom = oh - ih
+
+    # Gameplay fills the space in between: fit, then zoom; whatever doesn't fit is cut off.
+    slot = bottom - top
+    s = min(ow / gw, slot / gh) * max(1.0, zoom)
+    sw, sh = _even(gw * s), _even(gh * s)
+    vw, vh = min(sw, ow), min(sh, _even(slot))
+    px, py = (min(1.0, max(0.0, p)) for p in (pan_x, pan_y))
+    graph += (f"[g]crop={gw}:{gh}:{gx}:{gy},scale={sw}:{sh}:flags=lanczos,"
+              f"crop={vw}:{vh}:{int((sw - vw) * px)}:{int((sh - vh) * py)},setsar=1[gs];")
+    overlays.insert(0, ("gs", (ow - vw) // 2, top + (slot - vh) // 2))
+
+    current = "bg"
+    for k, (name, x, y) in enumerate(overlays):
+        graph += f"[{current}][{name}]overlay={x}:{y}[o{k}];"
+        current = f"o{k}"
+    return graph + f"[{current}]setsar=1" + (f",fps={fps_str}" if fps_str else "") + ",format=yuv420p[v]"
+
+
+def output_filter(info, fmt, orientation, zoom, pan_x, pan_y, layout, fps_str=None):
+    """The filter for one clip. The stacked layout only applies to vertical output."""
+    if fmt == "layout" and orientation == "vertical" and layout:
+        return layout_filter(info, layout, fps_str, zoom, pan_x, pan_y)
+    if fmt == "layout":
+        fmt = "zoom"
+    return vertical_filter(fmt, fps_str, pan_x, orientation, zoom, pan_y)
+
+
 def recording_date(path):
     """OBS names files like '2026-09-25 20-11-03.mkv'; otherwise use the file's date."""
     m = re.search(r"(20\d\d)-(\d\d)-(\d\d)", Path(path).stem)
@@ -54,16 +127,17 @@ def output_paths(source, out_dir, count):
     return [out_dir / f"deadlock_{date}_clip{first + i:02d}.mp4" for i in range(count)]
 
 
-def _encode(info, clip, fmt, zoom, orientation, out_path, encoder, progress, cancel, gpu_decode):
+def _encode(info, clip, fmt, zoom, orientation, layout, out_path, encoder, progress, cancel, gpu_decode):
     fmt = clip.fmt or fmt
-    zoom = (clip.zoom or zoom) if fmt == "zoom" else 1.0
+    zoom = (clip.zoom or zoom) if fmt in ("zoom", "layout") else 1.0
     duration = clip.end - clip.start
     cmd = [ffmpeg_path(), "-hide_banner", "-nostdin", "-v", "error", "-y",
            "-progress", "pipe:1", "-nostats"]
     if gpu_decode:
         cmd += gpu_decode_args(info)
     cmd += ["-ss", f"{clip.start:.3f}", "-i", info.path, "-t", f"{duration:.3f}",
-           "-filter_complex", vertical_filter(fmt, info.fps_str, clip.crop_x, orientation, zoom, clip.crop_y),
+           "-filter_complex", output_filter(info, fmt, orientation, zoom, clip.crop_x, clip.crop_y, layout,
+                                             info.fps_str),
             "-map", "[v]"]
     if info.has_audio:
         cmd += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"]
@@ -107,6 +181,7 @@ def export_clips(info, clips, settings, progress, cancel):
     log.info("Exporting %d clips, encoders available: %s", len(clips), encoders)
     paths = output_paths(info.path, out_dir, len(clips))
     gpu_decode = True
+    layout = layout_for(settings, info)
     written = []
     for i, (clip, path) in enumerate(zip(clips, paths)):
         def clip_progress(f, i=i):
@@ -114,12 +189,12 @@ def export_clips(info, clips, settings, progress, cancel):
         clip_progress(0)
         last_err = ""
         for encoder in list(encoders):
-            ok, last_err = _encode(info, clip, settings.vertical_format, settings.zoom_level, settings.output_orientation, path,
+            ok, last_err = _encode(info, clip, settings.vertical_format, settings.zoom_level, settings.output_orientation, layout, path,
                                    encoder, clip_progress, cancel, gpu_decode)
             if not ok and gpu_decode:
                 log.warning("Export with GPU decoding failed; decoding on the CPU from now on")
                 gpu_decode = False
-                ok, last_err = _encode(info, clip, settings.vertical_format, settings.zoom_level, settings.output_orientation,
+                ok, last_err = _encode(info, clip, settings.vertical_format, settings.zoom_level, settings.output_orientation, layout,
                                        path, encoder, clip_progress, cancel, gpu_decode)
             if ok:
                 log.info("Wrote %s with %s", path, encoder)

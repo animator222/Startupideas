@@ -7,11 +7,11 @@ from PySide6.QtWidgets import QMainWindow, QMessageBox, QStackedWidget
 from .. import APP_NAME, APP_VERSION
 from ..analysis import analyze, write_report
 from ..errors import FriendlyError
-from ..export import export_clips, vertical_filter
+from ..export import export_clips, output_filter
 from ..ffmpeg import extract_frame, probe
 from ..highlights import find_events, pick_clips
 from ..paths import CACHE_DIR
-from ..settings import badge_region, load_settings, save_settings
+from ..settings import badge_region, layout_for, load_settings, save_settings
 from ..youtube import download
 from .common import show_error, start_task
 from .editor import EditorDialog
@@ -43,7 +43,9 @@ class MainWindow(QMainWindow):
         self.home.url_chosen.connect(self.open_url)
         self.setup.back.connect(lambda: self.stack.setCurrentWidget(self.home))
         self.setup.start.connect(self.run_analysis)
-        self.setup.zoom_changed.connect(lambda z: self._make_previews(("zoom",), z))
+        self.setup.zoom_changed.connect(lambda z: self._make_previews(("zoom", "layout"), z))
+        self.setup.layout_changed.connect(
+            lambda: self._make_previews(("layout",), self.setup.zoom.value() / 100))
         self.progress.cancel.connect(self._cancel)
         self.review.repick.connect(self.repick)
         self.review.edit.connect(self.edit_clip)
@@ -97,10 +99,11 @@ class MainWindow(QMainWindow):
         self.setup.load(self.settings, self.info)
         self.stack.setCurrentWidget(self.setup)
 
-        self._make_previews(("blur", "zoom"), self.settings.zoom_level)
+        self._make_previews(("blur", "zoom", "layout"), self.settings.zoom_level)
 
     def _make_previews(self, formats, zoom):
         info = self.info
+        lay = layout_for(self.setup._settings, info)
         self._preview_job = getattr(self, "_preview_job", 0) + 1
         job = self._preview_job
 
@@ -109,9 +112,12 @@ class MainWindow(QMainWindow):
             out = {}
             for orientation in ("vertical", "horizontal"):
                 for fmt in formats:
+                    if fmt == "layout" and orientation != "vertical":
+                        continue
                     out[(orientation, fmt)] = extract_frame(
                         info.path, t, CACHE_DIR / f"preview_{orientation}_{fmt}_{job}.png",
-                        filter_complex=vertical_filter(fmt, orientation=orientation, zoom=zoom))
+                        filter_complex=output_filter(info, fmt, orientation, zoom, 0.5, 0.5,
+                                                     lay or {"game": [0, 0, 1, 1]}))
             return out
 
         def done(paths):

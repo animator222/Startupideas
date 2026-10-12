@@ -339,12 +339,16 @@ class EditorDialog(QDialog):
         fmt_row.addWidget(label("Format for this clip:"))
         self.fmt_blur = QRadioButton("Full frame + blurred background")
         self.fmt_zoom = QRadioButton("Zoomed gameplay + blurred background")
+        self.fmt_layout = QRadioButton("Stacked layout")
         group = QButtonGroup(self)
         group.addButton(self.fmt_blur)
         group.addButton(self.fmt_zoom)
+        group.addButton(self.fmt_layout)
         self.fmt_blur.toggled.connect(self._fmt_changed)
         fmt_row.addWidget(self.fmt_blur)
         fmt_row.addWidget(self.fmt_zoom)
+        fmt_row.addWidget(self.fmt_layout)
+        self.fmt_zoom.toggled.connect(self._fmt_changed)
         self.zoom = QSlider(Qt.Horizontal)
         self.zoom.setRange(110, 250)
         self.zoom.setFixedWidth(160)
@@ -370,7 +374,7 @@ class EditorDialog(QDialog):
         lay.addLayout(nav)
 
         # Keep keyboard focus off buttons so Space/arrows always control the video.
-        for wdg in self.findChildren(QPushButton) + [self.fmt_blur, self.fmt_zoom, self.zoom]:
+        for wdg in self.findChildren(QPushButton) + [self.fmt_blur, self.fmt_zoom, self.fmt_layout, self.zoom]:
             wdg.setFocusPolicy(Qt.NoFocus)
         self.setFocusPolicy(Qt.StrongFocus)
 
@@ -397,7 +401,8 @@ class EditorDialog(QDialog):
         overlay.out_size = (1920, 1080) if orientation == "horizontal" else (1080, 1920)
         self.zoom.setValue(int(round((clip.zoom or default_zoom) * 100)))
         fmt = clip.fmt or default_fmt
-        (self.fmt_zoom if fmt == "zoom" else self.fmt_blur).setChecked(True)
+        {"zoom": self.fmt_zoom, "layout": self.fmt_layout}.get(fmt, self.fmt_blur).setChecked(True)
+        self.fmt_layout.setEnabled(orientation == "vertical")
         self._fmt_changed()
         pad = max(20.0, (clip.end - clip.start) * 0.6)
         self._set_view(max(0.0, clip.start - pad), min(info.duration, clip.end + pad))
@@ -423,8 +428,9 @@ class EditorDialog(QDialog):
 
     def _save(self):
         self.clip.start, self.clip.end = round(self.s0, 2), round(self.s1, 2)
-        self.clip.fmt = "zoom" if self.fmt_zoom.isChecked() else "blur"
-        self.clip.zoom = self.zoom.value() / 100 if self.clip.fmt == "zoom" else 0.0
+        self.clip.fmt = ("layout" if self.fmt_layout.isChecked() else
+                         "zoom" if self.fmt_zoom.isChecked() else "blur")
+        self.clip.zoom = self.zoom.value() / 100 if self.clip.fmt in ("zoom", "layout") else 0.0
         self.clip.crop_x = self.view.overlay.crop_x
         self.clip.crop_y = self.view.overlay.crop_y
         if not self.clip.start <= self.clip.focus <= self.clip.end:
@@ -523,10 +529,12 @@ class EditorDialog(QDialog):
         v0, v1 = self.timeline.v0, self.timeline.v1
         self._set_view(max(0.0, v0 - 30), min(self.info.duration, v1 + 30))
 
-    def _fmt_changed(self):
+    def _fmt_changed(self, *_):
         zoomed = self.fmt_zoom.isChecked()
-        for wdg in (self.view.overlay, self.crop_hint, self.zoom, self.zoom_lbl):
+        for wdg in (self.view.overlay, self.crop_hint):
             wdg.setVisible(zoomed)
+        for wdg in (self.zoom, self.zoom_lbl):  # in the stacked layout, zoom sizes the gameplay
+            wdg.setVisible(zoomed or self.fmt_layout.isChecked())
 
     def _zoom_changed(self, value):
         self.zoom_lbl.setText(f"{value}%")

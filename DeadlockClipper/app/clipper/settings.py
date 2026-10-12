@@ -14,6 +14,8 @@ class Settings:
     max_len: int = 45
     vertical_format: str = "blur"  # "blur" (full frame) or "zoom" (zoomed gameplay), both on a blurred background
     zoom_level: float = 1.4  # how much "zoom" enlarges the gameplay (1.4 = 140%)
+    layout_landscape: dict = None  # stacked layout boxes for horizontal videos: {"game", "cam", "items"}
+    layout_portrait: dict = None  # ... and for vertical videos
     output_orientation: str = "vertical"  # "vertical" 1080x1920 or "horizontal" 1920x1080
     badge_region_landscape: list = None  # kill badge search area for horizontal videos (x, y, w, h)
     badge_region_portrait: list = None  # ... and for vertical videos
@@ -40,7 +42,13 @@ class Settings:
         self.sensitivity = max(1, min(10, int(self.sensitivity)))
         if self.vertical_format == "crop":  # "crop to fill" was replaced by zoom
             self.vertical_format = "zoom"
-        if self.vertical_format not in ("blur", "zoom"):
+        for name in ("layout_landscape", "layout_portrait"):
+            lay = getattr(self, name)
+            ok = isinstance(lay, dict) and _valid_box(lay.get("game"))
+            setattr(self, name, {"game": [float(v) for v in lay["game"]],
+                                 **{k: [float(v) for v in lay[k]] if _valid_box(lay.get(k)) else None
+                                    for k in ("cam", "items")}} if ok else None)
+        if self.vertical_format not in ("blur", "zoom", "layout"):
             self.vertical_format = "blur"
         try:
             self.zoom_level = round(max(1.1, min(2.5, float(self.zoom_level))), 2)
@@ -50,10 +58,14 @@ class Settings:
             self.output_orientation = "vertical"
         for name in ("badge_region_landscape", "badge_region_portrait"):
             r = getattr(self, name)
-            ok = isinstance(r, (list, tuple)) and len(r) == 4 and all(isinstance(v, (int, float)) for v in r)
-            ok = ok and r[2] > 0.02 and r[3] > 0.02 and r[0] >= 0 and r[1] >= 0 and r[0] + r[2] <= 1.001 and r[1] + r[3] <= 1.001
-            setattr(self, name, [float(v) for v in r] if ok else None)
+            setattr(self, name, [float(v) for v in r] if _valid_box(r) else None)
         return self
+
+
+def _valid_box(r):
+    ok = isinstance(r, (list, tuple)) and len(r) == 4 and all(isinstance(v, (int, float)) for v in r)
+    return ok and r[2] > 0.02 and r[3] > 0.02 and r[0] >= 0 and r[1] >= 0 and \
+        r[0] + r[2] <= 1.001 and r[1] + r[3] <= 1.001
 
 
 def load_settings():
@@ -80,3 +92,8 @@ def badge_region(settings, info):
     from .vision import default_region
     saved = settings.badge_region_portrait if info.height > info.width else settings.badge_region_landscape
     return tuple(saved) if saved else default_region(info)
+
+
+def layout_for(settings, info):
+    """The stacked layout saved for this video's shape, or None if not set up yet."""
+    return settings.layout_portrait if info.height > info.width else settings.layout_landscape
