@@ -1,0 +1,4 @@
+# Windows scripts are stored with Windows line endings exactly as-is.
+*.bat -text
+*.ps1 -text
+*.ico binary

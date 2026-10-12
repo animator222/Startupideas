@@ -1,0 +1,594 @@
+"""The app's screens: Home, Settings, Progress, Review and Done."""
+import logging
+from dataclasses import replace
+from pathlib import Path
+
+import numpy as np
+from PySide6.QtCore import QLineF, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
+from PySide6.QtWidgets import (
+    QButtonGroup, QCheckBox, QDoubleSpinBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
+    QLineEdit, QProgressBar, QPushButton, QRadioButton, QScrollArea, QSizePolicy, QSlider, QSpinBox,
+    QVBoxLayout, QWidget,
+)
+
+from ..highlights import fmt_time
+from ..paths import LOG_DIR, open_in_explorer, videos_folder
+
+log = logging.getLogger(__name__)
+
+VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".flv", ".avi", ".webm", ".ts", ".m4v"}
+
+
+def label(text, name=None, wrap=False):
+    w = QLabel(text)
+    if name:
+        w.setObjectName(name)
+    w.setWordWrap(wrap)
+    return w
+
+
+def button(text, primary=False):
+    b = QPushButton(text)
+    b.setCursor(Qt.PointingHandCursor)
+    if primary:
+        b.setObjectName("primary")
+    return b
+
+
+def refresh_style(widget):
+    widget.style().unpolish(widget)
+    widget.style().polish(widget)
+
+
+# ---------------------------------------------------------------- Home
+
+class DropZone(QFrame):
+    file_dropped = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("drop")
+        self.setAcceptDrops(True)
+        self.setMinimumHeight(220)
+        lay = QVBoxLayout(self)
+        lay.setAlignment(Qt.AlignCenter)
+        lay.addWidget(label("Drop a recording here", "title"), alignment=Qt.AlignCenter)
+        lay.addWidget(label("MP4, MKV, MOV, FLV ...", "subtle"), alignment=Qt.AlignCenter)
+
+    def _set_hover(self, on):
+        self.setProperty("hover", "true" if on else "false")
+        refresh_style(self)
+
+    def dragEnterEvent(self, event):
+        urls = event.mimeData().urls()
+        if urls and urls[0].isLocalFile():
+            event.acceptProposedAction()
+            self._set_hover(True)
+
+    def dragLeaveEvent(self, event):
+        self._set_hover(False)
+
+    def dropEvent(self, event):
+        self._set_hover(False)
+        urls = event.mimeData().urls()
+        if urls and urls[0].isLocalFile():
+            self.file_dropped.emit(urls[0].toLocalFile())
+
+
+class HomePage(QWidget):
+    file_chosen = Signal(str)
+    url_chosen = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(40, 30, 40, 30)
+        lay.setSpacing(16)
+        lay.addWidget(label("Deadlock Clipper", "title"))
+        lay.addWidget(label("Turn a Deadlock recording into vertical highlight clips for Shorts and Reels.",
+                            "subtle", wrap=True))
+
+        drop = DropZone()
+        drop.file_dropped.connect(self._check_and_emit)
+        lay.addWidget(drop)
+
+        browse = button("Choose a video file...", primary=True)
+        browse.clicked.connect(self._browse)
+        lay.addWidget(browse, alignment=Qt.AlignCenter)
+
+        lay.addSpacing(10)
+        lay.addWidget(label("Or paste a YouTube link (local files work best):", "subtle"))
+        row = QHBoxLayout()
+        self.url = QLineEdit()
+        self.url.setPlaceholderText("https://www.youtube.com/watch?v=...")
+        self.url.returnPressed.connect(self._url)
+        dl = button("Download")
+        dl.clicked.connect(self._url)
+        row.addWidget(self.url, 1)
+        row.addWidget(dl)
+        lay.addLayout(row)
+        lay.addStretch(1)
+
+        logs = button("Open logs folder")
+        logs.clicked.connect(lambda: open_in_explorer(LOG_DIR))
+        lay.addWidget(logs, alignment=Qt.AlignRight)
+
+    def _browse(self):
+        exts = " ".join(f"*{e}" for e in sorted(VIDEO_EXTS))
+        path, _ = QFileDialog.getOpenFileName(self, "Choose a recording", str(videos_folder()),
+                                              f"Videos ({exts});;All files (*)")
+        if path:
+            self._check_and_emit(path)
+
+    def _check_and_emit(self, path):
+        self.file_chosen.emit(path)
+
+    def _url(self):
+        text = self.url.text().strip()
+        if text:
+            self.url_chosen.emit(text)
+
+
+# ---------------------------------------------------------------- Settings
+
+class FormatOption(QFrame):
+    clicked = Signal()
+
+    def __init__(self, title, subtitle):
+        super().__init__()
+        self.setObjectName("option")
+        self.setCursor(Qt.PointingHandCursor)
+        lay = QVBoxLayout(self)
+        self.image = QLabel("Making preview...")
+        self.image.setFixedSize(162, 288)
+        self.image.setAlignment(Qt.AlignCenter)
+        self.image.setStyleSheet("background: #0d0e11; border-radius: 4px;")
+        self.radio = QRadioButton(title)
+        lay.addWidget(self.image, alignment=Qt.AlignCenter)
+        lay.addWidget(self.radio)
+        lay.addWidget(label(subtitle, "subtle", wrap=True))
+        self.radio.toggled.connect(self._update)
+
+    def mousePressEvent(self, event):
+        self.radio.setChecked(True)
+        self.clicked.emit()
+
+    def _update(self):
+        self.setProperty("selected", "true" if self.radio.isChecked() else "false")
+        refresh_style(self)
+
+    def set_image(self, path):
+        pix = QPixmap(str(path))
+        if not pix.isNull():
+            self.image.setPixmap(pix.scaled(self.image.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        else:
+            self.image.setText("No preview")
+
+
+class SettingsPage(QWidget):
+    start = Signal(object)  # Settings
+    back = Signal()
+
+    def __init__(self):
+        super().__init__()
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(30, 20, 30, 20)
+        self.heading = label("Settings", "title")
+        self.video_label = label("", "subtle", wrap=True)
+        outer.addWidget(self.heading)
+        outer.addWidget(self.video_label)
+
+        body = QHBoxLayout()
+        outer.addLayout(body, 1)
+
+        # Left: numbers and checkboxes
+        form = QGridLayout()
+        form.setVerticalSpacing(10)
+        r = 0
+        self.num = QSpinBox(); self.num.setRange(1, 30)
+        form.addWidget(label("Number of clips"), r, 0); form.addWidget(self.num, r, 1); r += 1
+        self.min_len = QSpinBox(); self.min_len.setRange(5, 60); self.min_len.setSuffix(" s")
+        self.max_len = QSpinBox(); self.max_len.setRange(5, 60); self.max_len.setSuffix(" s")
+        self.min_len.valueChanged.connect(lambda v: self.max_len.setValue(max(v, self.max_len.value())))
+        self.max_len.valueChanged.connect(lambda v: self.min_len.setValue(min(v, self.min_len.value())))
+        lens = QHBoxLayout(); lens.addWidget(self.min_len); lens.addWidget(label("to")); lens.addWidget(self.max_len)
+        form.addWidget(label("Clip length"), r, 0); form.addLayout(lens, r, 1); r += 1
+
+        form.addWidget(label("What counts as a highlight:"), r, 0, 1, 2); r += 1
+        self.kills = QCheckBox("My kills and assists")
+        self.multi = QCheckBox("Multikills")
+        self.fights = QCheckBox("Teamfights")
+        self.objectives = QCheckBox("Big objective moments (coming soon)")
+        self.objectives.setEnabled(False)
+        self.objectives.setToolTip("Needs a screenshot of a Guardian/Walker/Mid Boss going down "
+                                   "to build this. Send one to Claude.")
+        for cb in (self.kills, self.multi, self.fights, self.objectives):
+            form.addWidget(cb, r, 0, 1, 2); r += 1
+        self.no_deaths = QCheckBox("Skip moments where I die (clips end before the death)")
+        form.addWidget(self.no_deaths, r, 0, 1, 2); r += 1
+
+        form.addWidget(label("Fight sensitivity"), r, 0)
+        sens = QHBoxLayout()
+        self.sens = QSlider(Qt.Horizontal); self.sens.setRange(1, 10)
+        sens.addWidget(label("Low", "subtle")); sens.addWidget(self.sens, 1); sens.addWidget(label("High", "subtle"))
+        form.addLayout(sens, r, 1); r += 1
+        form.addWidget(label("Low = only the biggest fights. High = small skirmishes count too.", "subtle", True),
+                       r, 0, 1, 2); r += 1
+        self.full = QCheckBox("Scan the whole video (slower; catches kills in quiet moments)")
+        form.addWidget(self.full, r, 0, 1, 2); r += 1
+
+        form.addWidget(label("Save clips to"), r, 0)
+        out = QHBoxLayout()
+        self.out_dir = QLineEdit()
+        pick = button("Browse...")
+        pick.clicked.connect(self._pick_folder)
+        out.addWidget(self.out_dir, 1); out.addWidget(pick)
+        form.addLayout(out, r, 1); r += 1
+        form.setRowStretch(r, 1)
+        left = QWidget(); left.setLayout(form)
+        body.addWidget(left, 3)
+
+        # Right: vertical format previews
+        right = QVBoxLayout()
+        right.addWidget(label("Vertical format (click one):"))
+        opts = QHBoxLayout()
+        self.opt_blur = FormatOption("Full frame + blurred background", "Shows the whole screen.")
+        self.opt_crop = FormatOption("Center crop", "Fills the screen, cuts off the sides.")
+        group = QButtonGroup(self)
+        group.addButton(self.opt_blur.radio); group.addButton(self.opt_crop.radio)
+        opts.addWidget(self.opt_blur); opts.addWidget(self.opt_crop)
+        right.addLayout(opts)
+        right.addStretch(1)
+        body.addLayout(right, 2)
+
+        nav = QHBoxLayout()
+        back = button("Back")
+        back.clicked.connect(self.back.emit)
+        go = button("Find highlights", primary=True)
+        go.clicked.connect(self._start)
+        nav.addWidget(back); nav.addStretch(1); nav.addWidget(go)
+        outer.addLayout(nav)
+
+    def load(self, settings, info):
+        self._settings = settings
+        name = Path(info.path).name
+        self.video_label.setText(f"{name}  •  {fmt_time(info.duration)}  •  "
+                                 f"{info.width}x{info.height} @ {info.fps:.0f} fps")
+        self.num.setValue(settings.num_clips)
+        self.max_len.setValue(settings.max_len)
+        self.min_len.setValue(settings.min_len)
+        self.kills.setChecked(settings.want_kills)
+        self.multi.setChecked(settings.want_multikills)
+        self.fights.setChecked(settings.want_teamfights)
+        self.no_deaths.setChecked(settings.exclude_deaths)
+        self.sens.setValue(settings.sensitivity)
+        self.full.setChecked(settings.full_scan)
+        self.out_dir.setText(settings.output_dir)
+        (self.opt_crop if settings.vertical_format == "crop" else self.opt_blur).radio.setChecked(True)
+        for opt in (self.opt_blur, self.opt_crop):
+            opt.image.setPixmap(QPixmap())
+            opt.image.setText("Making preview...")
+
+    def set_previews(self, paths):
+        self.opt_blur.set_image(paths["blur"])
+        self.opt_crop.set_image(paths["crop"])
+
+    def _pick_folder(self):
+        path = QFileDialog.getExistingDirectory(self, "Where should clips be saved?", self.out_dir.text())
+        if path:
+            self.out_dir.setText(path)
+
+    def current(self):
+        return replace(
+            self._settings,
+            num_clips=self.num.value(), min_len=self.min_len.value(), max_len=self.max_len.value(),
+            vertical_format="crop" if self.opt_crop.radio.isChecked() else "blur",
+            want_kills=self.kills.isChecked(), want_multikills=self.multi.isChecked(),
+            want_teamfights=self.fights.isChecked(), want_objectives=False,
+            exclude_deaths=self.no_deaths.isChecked(), sensitivity=self.sens.value(),
+            full_scan=self.full.isChecked(), output_dir=self.out_dir.text().strip(),
+        ).validate()
+
+    def _start(self):
+        s = self.current()
+        if not (s.want_kills or s.want_multikills or s.want_teamfights):
+            from .common import show_error
+            show_error(self, "Tick at least one kind of highlight.")
+            return
+        self.start.emit(s)
+
+
+# ---------------------------------------------------------------- Progress
+
+class ProgressPage(QWidget):
+    cancel = Signal()
+
+    def __init__(self):
+        super().__init__()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(60, 60, 60, 60)
+        lay.addStretch(1)
+        self.title = label("", "title")
+        self.step = label("", "subtle")
+        self.bar = QProgressBar(); self.bar.setRange(0, 1000); self.bar.setTextVisible(False)
+        self.pct = label("", "subtle")
+        lay.addWidget(self.title, alignment=Qt.AlignCenter)
+        lay.addSpacing(10)
+        lay.addWidget(self.bar)
+        lay.addWidget(self.step, alignment=Qt.AlignCenter)
+        lay.addWidget(self.pct, alignment=Qt.AlignCenter)
+        lay.addStretch(1)
+        self.cancel_btn = button("Cancel")
+        self.cancel_btn.clicked.connect(self._cancel)
+        lay.addWidget(self.cancel_btn, alignment=Qt.AlignCenter)
+
+    def begin(self, title):
+        self.title.setText(title)
+        self.step.setText("Starting...")
+        self.pct.setText("")
+        self.bar.setValue(0)
+        self.cancel_btn.setEnabled(True)
+        self.cancel_btn.setText("Cancel")
+
+    def update(self, fraction, message):
+        self.bar.setValue(int(fraction * 1000))
+        if message:
+            self.step.setText(message)
+        self.pct.setText(f"{fraction * 100:.0f}%")
+
+    def _cancel(self):
+        self.cancel_btn.setEnabled(False)
+        self.cancel_btn.setText("Cancelling...")
+        self.cancel.emit()
+
+
+# ---------------------------------------------------------------- Review
+
+class LoudnessGraph(QWidget):
+    """The whole match at a glance: loudness, the fight threshold, kills, deaths and chosen clips."""
+
+    def __init__(self):
+        super().__init__()
+        self.setMinimumHeight(90)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.data = None
+
+    def set_data(self, events, clips, duration):
+        self.data = (events, clips, duration)
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        p.fillRect(self.rect(), QColor("#1e2027"))
+        if not self.data:
+            return
+        events, clips, duration = self.data
+        curve = events.sustained
+        if len(curve) == 0 or duration <= 0:
+            return
+        lo, hi = float(np.percentile(curve, 1)), float(curve.max())
+        hi = max(hi, events.threshold + 1, lo + 1)
+        y = lambda v: h - 8 - (v - lo) / (hi - lo) * (h - 20)  # noqa: E731
+        x = lambda t: t / duration * w  # noqa: E731
+
+        for c in clips:
+            p.fillRect(QRectF(x(c.start), 0, max(2.0, x(c.end) - x(c.start)), h), QColor(217, 69, 43, 70))
+
+        buckets = np.array_split(curve, max(1, min(w, len(curve))))
+        p.setPen(QPen(QColor("#7aa2f7"), 1))
+        prev = None
+        for i, b in enumerate(buckets):
+            pt = (i / len(buckets) * w, y(float(b.max())))
+            if prev:
+                p.drawLine(QLineF(*prev, *pt))
+            prev = pt
+
+        p.setPen(QPen(QColor("#f0b35a"), 1, Qt.DashLine))
+        p.drawLine(QLineF(0, y(events.threshold), w, y(events.threshold)))
+
+        p.setPen(QPen(QColor("#ff4d4d"), 2))
+        for t in events.takedowns:
+            p.drawLine(QLineF(x(t), 0, x(t), 10))
+        p.setPen(QPen(QColor("#bbbbbb"), 2))
+        for t in events.deaths:
+            p.drawLine(QLineF(x(t), h - 10, x(t), h))
+        p.end()
+
+
+class TimeBox(QDoubleSpinBox):
+    def __init__(self, maximum):
+        super().__init__()
+        self.setRange(0, maximum)
+        self.setDecimals(1)
+        self.setSingleStep(0.5)
+        self.setSuffix(" s")
+        self.setFixedWidth(110)
+
+
+class ClipRow(QFrame):
+    play = Signal(object)
+    delete = Signal(object)
+
+    def __init__(self, index, clip, duration):
+        super().__init__()
+        self.setObjectName("card")
+        self.clip = clip
+        lay = QHBoxLayout(self)
+        self.thumb = QLabel()
+        self.thumb.setFixedSize(192, 108)
+        self.thumb.setStyleSheet("background: #0d0e11; border-radius: 4px;")
+        lay.addWidget(self.thumb)
+
+        mid = QVBoxLayout()
+        self.title = label("")
+        self.title.setStyleSheet("font-weight: 600; background: transparent;")
+        mid.addWidget(self.title)
+        reasons = label(" • ".join(clip.reasons), "reason", wrap=True)
+        reasons.setStyleSheet("background: transparent;")
+        mid.addWidget(reasons)
+        times = QHBoxLayout()
+        self.start = TimeBox(duration); self.start.setValue(clip.start)
+        self.end = TimeBox(duration); self.end.setValue(clip.end)
+        self.length = label("", "subtle")
+        for wdg in (label("Start"), self.start, label("End"), self.end, self.length):
+            times.addWidget(wdg)
+        times.addStretch(1)
+        mid.addLayout(times)
+        lay.addLayout(mid, 1)
+
+        btns = QVBoxLayout()
+        play = button("▶ Play")
+        play.clicked.connect(lambda: self.play.emit(self.clip))
+        rm = button("✕ Delete")
+        rm.clicked.connect(lambda: self.delete.emit(self))
+        btns.addWidget(play); btns.addWidget(rm)
+        lay.addLayout(btns)
+
+        self.index = index
+        self.start.valueChanged.connect(self._times_changed)
+        self.end.valueChanged.connect(self._times_changed)
+        self._times_changed()
+
+    def _times_changed(self):
+        self.clip.start = self.start.value()
+        self.clip.end = self.end.value()
+        length = self.clip.end - self.clip.start
+        bad = length < 3 or length > 60
+        self.length.setText(f"{length:.1f}s" + ("  (must be 3-60 s)" if bad else ""))
+        self.length.setStyleSheet("color: #ff6b6b;" if bad else "")
+        self.title.setText(f"Clip {self.index}   {fmt_time(self.clip.start)} → {fmt_time(self.clip.end)}"
+                           f"   •   score {self.clip.score:g}")
+
+    def valid(self):
+        return 3 <= self.clip.end - self.clip.start <= 60
+
+    def set_thumb(self, path):
+        pix = QPixmap(str(path))
+        if not pix.isNull():
+            self.thumb.setPixmap(pix.scaled(self.thumb.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+
+class ReviewPage(QWidget):
+    repick = Signal(int, int)  # sensitivity, number of clips
+    play = Signal(object)
+    export = Signal(list)
+    back = Signal()
+
+    def __init__(self):
+        super().__init__()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(24, 16, 24, 16)
+        lay.addWidget(label("Review your clips", "title"))
+        self.summary = label("", "subtle", wrap=True)
+        lay.addWidget(self.summary)
+
+        self.graph = LoudnessGraph()
+        lay.addWidget(self.graph)
+        lay.addWidget(label("Blue = game loudness, dashed = fight threshold, red ticks = your kills/assists, "
+                            "grey ticks = deaths, shaded = chosen clips", "subtle", wrap=True))
+
+        tune = QHBoxLayout()
+        tune.addWidget(label("Fight sensitivity"))
+        self.sens = QSlider(Qt.Horizontal); self.sens.setRange(1, 10); self.sens.setFixedWidth(200)
+        tune.addWidget(self.sens)
+        tune.addWidget(label("Clips"))
+        self.num = QSpinBox(); self.num.setRange(1, 30)
+        tune.addWidget(self.num)
+        again = button("Re-pick clips")
+        again.clicked.connect(lambda: self.repick.emit(self.sens.value(), self.num.value()))
+        tune.addWidget(again)
+        tune.addStretch(1)
+        lay.addLayout(tune)
+
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.list_host = QWidget()
+        self.list = QVBoxLayout(self.list_host)
+        self.list.addStretch(1)
+        self.scroll.setWidget(self.list_host)
+        lay.addWidget(self.scroll, 1)
+
+        nav = QHBoxLayout()
+        back = button("Start over")
+        back.clicked.connect(self.back.emit)
+        self.export_btn = button("Export clips", primary=True)
+        self.export_btn.clicked.connect(self._export)
+        nav.addWidget(back); nav.addStretch(1); nav.addWidget(self.export_btn)
+        lay.addLayout(nav)
+        self.rows = []
+
+    def show_results(self, info, events, clips, settings):
+        self.sens.setValue(settings.sensitivity)
+        self.num.setValue(settings.num_clips)
+        for row in self.rows:
+            row.setParent(None)
+            row.deleteLater()
+        self.rows = []
+        for i, clip in enumerate(clips, 1):
+            row = ClipRow(i, clip, info.duration)
+            row.play.connect(self.play.emit)
+            row.delete.connect(self._delete)
+            self.list.insertWidget(self.list.count() - 1, row)
+            self.rows.append(row)
+        n = lambda count, word: f"{count} {word}{'' if count == 1 else 's'}"  # noqa: E731
+        found = (f"Found {n(len(events.takedowns), 'kill/assist badge')}, {n(len(events.deaths), 'death')} and "
+                 f"{n(len(events.fights), 'loud fight')} in {fmt_time(info.duration)} of gameplay.")
+        if not clips:
+            found += "  No clips matched - try a higher sensitivity, or tick 'Scan the whole video' in Settings."
+        self.summary.setText(found)
+        self.graph.set_data(events, clips, info.duration)
+        self._update_export()
+
+    def set_thumbs(self, paths):
+        for row, path in zip(self.rows, paths):
+            if path:
+                row.set_thumb(path)
+
+    def _delete(self, row):
+        self.rows.remove(row)
+        row.setParent(None)
+        row.deleteLater()
+        self._update_export()
+
+    def _update_export(self):
+        self.export_btn.setText(f"Export {len(self.rows)} clip{'s' if len(self.rows) != 1 else ''}")
+        self.export_btn.setEnabled(bool(self.rows))
+
+    def _export(self):
+        bad = [r.index for r in self.rows if not r.valid()]
+        if bad:
+            from .common import show_error
+            show_error(self, f"Clip {', '.join(map(str, bad))} must be between 3 and 60 seconds long.")
+            return
+        self.export.emit([r.clip for r in self.rows])
+
+
+# ---------------------------------------------------------------- Done
+
+class DonePage(QWidget):
+    again = Signal()
+
+    def __init__(self):
+        super().__init__()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(60, 40, 60, 40)
+        lay.addWidget(label("Your clips are ready!", "title"))
+        self.files = label("", "subtle", wrap=True)
+        self.files.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lay.addWidget(self.files)
+        lay.addStretch(1)
+        row = QHBoxLayout()
+        self.open_btn = button("Open clips folder", primary=True)
+        again = button("Make more clips")
+        again.clicked.connect(self.again.emit)
+        row.addWidget(again); row.addStretch(1); row.addWidget(self.open_btn)
+        lay.addLayout(row)
+        self._folder = None
+        self.open_btn.clicked.connect(lambda: self._folder and open_in_explorer(self._folder))
+
+    def show_files(self, files):
+        self._folder = str(Path(files[0]).parent) if files else None
+        self.files.setText("\n".join(Path(f).name for f in files) + (f"\n\nSaved in: {self._folder}" if files else ""))

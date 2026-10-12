@@ -1,0 +1,8 @@
+.venv/
+tools/
+logs/
+cache/
+downloads/
+settings.json
+__pycache__/
+*.pyc
