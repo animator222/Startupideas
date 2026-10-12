@@ -129,6 +129,10 @@ def write_report(info, events, clips, settings, segments=None):
     ]
     for f in sorted(events.fights, key=lambda f: -f.peak)[:40]:
         lines.append(f"   {fmt_time(f.start)}-{fmt_time(f.end)}  peak {f.peak:.1f} dB  ({f.length:.0f}s)")
+    lines += ["", "Every kill/assist badge sighting and what happened to it:"]
+    lines += ["   " + x for x in getattr(events, "sightings", [])] or ["   (none)"]
+    lines += ["", "Kills that did not become clips, and why:"]
+    lines += ["   " + x for x in getattr(events, "clip_notes", [])] or ["   (none - every counted kill is in a clip)"]
     lines += ["", f"Chosen clips ({len(clips)}):"]
     for i, c in enumerate(clips, 1):
         lines.append(f"  {i:02d}. {fmt_time(c.start)}-{fmt_time(c.end)}  score {c.score}  "

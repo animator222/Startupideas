@@ -93,6 +93,10 @@ Loudness is compared with how loud *that* match normally is, so farming noise do
 as a fight. **Quick scan** (off by default) only checks the louder parts of the video for kill
 badges. It's faster, but it can miss kills during laning, so leave it off unless you're in a hurry.
 
+**Why these clips?** (on the review screen) opens a report listing every kill/assist badge the
+app saw, whether it counted (and if not, why: only one frame, buy menu open, ...), and which kills
+did not become clips and why (e.g. your clip limit was already filled by higher-scoring clips).
+
 **See what was detected** (on the review screen) opens a picture of every moment that looked
 like your kill badge, with its time. Green numbers counted as kills; orange ones were close but
 not counted. Paste that picture into the chat if kills are missing or wrong.

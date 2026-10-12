@@ -14,6 +14,9 @@ from .vision import MENU_PANEL, SAMPLE_FPS
 log = logging.getLogger(__name__)
 
 BADGE_THRESHOLD = 0.5
+SINGLE_FRAME_SCORE = 0.7  # one clear sighting is enough; weaker ones need two frames
+POSITION_TOLERANCE = 80  # px (source video): how far sightings of one badge may be apart
+MENU_MIN_SECONDS = 1.5  # the shop panel must be seen this long to count as the shop
 MULTIKILL_GAP = 12.0  # takedowns this close together count as a multikill
 MOMENT_GAP = 20.0  # kills this close together go into the same clip (if it fits the max length)
 ACTION_QUIET_BEFORE = 3.0  # walking back from a kill, this much quiet means the fight hadn't started
@@ -43,6 +46,8 @@ class Events:
     spikes: list  # times of the sharpest loudness spikes
     threshold: float  # sustained-loudness threshold used for fights (dB above normal)
     sustained: np.ndarray  # for the loudness graph
+    sightings: list = field(default_factory=list)  # every badge sighting and what happened to it
+    clip_notes: list = field(default_factory=list)  # kills that did not become clips, and why
 
 
 @dataclass
@@ -69,33 +74,63 @@ def _runs(mask):
     return list(zip(np.where(diff == 1)[0], np.where(diff == -1)[0]))
 
 
-def find_takedowns(vision):
+def _menu_times(vision):
+    """Times the buy menu is open: the pale shop panel seen for at least MENU_MIN_SECONDS.
+    (A single pale frame - a bright wall, sky or flash - is not the shop.)"""
+    t = vision["t"]
+    if "panel" not in vision:
+        return t[:0]
+    pale = vision["panel"] >= MENU_PANEL
+    keep = np.zeros(len(t), bool)
+    for a, b in _runs(pale):
+        if (b - a) / SAMPLE_FPS >= MENU_MIN_SECONDS:
+            keep[a:b] = True
+    return t[keep]
+
+
+def find_takedowns(vision, report=None):
+    """Turn per-frame badge scores into takedown times. Every badge sighting and what happened
+    to it is added to `report` (a list of strings) when given."""
     t, score, bx, by = vision["t"], vision["badge"], vision["bx"], vision["by"]
-    # Times the buy menu is open. Tooltips can hide part of the menu panel for a moment,
-    # so badges a few seconds either side of a clearly open menu are ignored too.
-    menu_times = t[vision["panel"] >= MENU_PANEL] if "panel" in vision else t[:0]
+    # Tooltips can hide part of the shop for a moment, so badges a few seconds either side of a
+    # clearly open shop are ignored too.
+    menu_times = _menu_times(vision)
     seen = score >= BADGE_THRESHOLD
-    # Bridge flickers: the badge can be missed for a frame or two (explosions, overlap).
+    # Bridge flickers: the badge can be missed for a few frames (explosions, effects).
     for a, b in _runs(~seen):
-        if 0 < a and b < len(seen) and b - a <= 2:
+        if 0 < a and b < len(seen) and b - a <= 3:
             seen[a:b] = True
     found = []
+
+    def note(when, text):
+        if report is not None:
+            report.append(f"{fmt_time(when)}  {text}")
+
     for a, b in _runs(seen):
         seconds = (b - a) / SAMPLE_FPS
-        if b - a < 2:
-            continue  # a single frame is usually something else that's red and round
-        if t[b - 1] - t[a] > seconds + 1:
-            continue  # run spans a gap between scanned parts of the video
-        if seconds > 8:
-            log.debug("Ignored long red-circle run at %.1fs (%.1fs)", t[a], seconds)
-            continue
         hit = score[a:b] >= BADGE_THRESHOLD
-        if np.ptp(bx[a:b][hit]) > 60 or np.ptp(by[a:b][hit]) > 60:
-            continue  # the badge stays in place; moving red things are not it
+        hits, best = int(hit.sum()), float(score[a:b].max())
+        if hits < 2 and best < SINGLE_FRAME_SCORE:
+            note(t[a], f"not counted: seen in only 1 frame (score {best:.2f})")
+            continue
+        if t[b - 1] - t[a] > seconds + 1:
+            note(t[a], "not counted: spans a gap in the scan")
+            continue
+        if seconds > 8:
+            note(t[a], f"not counted: stayed on screen {seconds:.0f}s (a real badge disappears within a few seconds)")
+            continue
+        # The badge stays in place: most sightings must be close to the middle one.
+        xs, ys = bx[a:b][hit], by[a:b][hit]
+        mx, my = np.median(xs), np.median(ys)
+        near = (np.abs(xs - mx) <= POSITION_TOLERANCE) & (np.abs(ys - my) <= POSITION_TOLERANCE)
+        if near.mean() < 0.6:
+            note(t[a], "not counted: the red shape moved around (a real badge stays put)")
+            continue
         lo, hi = np.searchsorted(menu_times, [t[a] - MENU_PAD, t[b - 1] + MENU_PAD])
         if hi > lo:
-            log.debug("Ignored badge at %.1fs: buy menu open", t[a])
+            note(t[a], "not counted: buy menu open around this time")
             continue
+        note(t[a], f"COUNTED as a kill/assist ({hits} frames, best score {best:.2f})")
         found.append(float(t[a]))
     log.info("Buy menu seen open in %d sampled frames", len(menu_times))
     return found
@@ -141,7 +176,9 @@ def find_events(analysis, sensitivity):
               if short[i] >= spike_level and short[i] >= short[i - 1] and short[i] >= short[i + 1]]
 
     vision = analysis["vision"]
-    events = Events(find_takedowns(vision), find_deaths(vision), fights, spikes, threshold, sustained)
+    sightings = []
+    events = Events(find_takedowns(vision, sightings), find_deaths(vision), fights, spikes, threshold, sustained,
+                    sightings)
     log.info("Events: %d takedowns, %d deaths, %d loud fights (threshold %.1f dB), %d spikes",
              len(events.takedowns), len(events.deaths), len(fights), threshold, len(spikes))
     return events
@@ -319,16 +356,30 @@ def _handle_deaths(clip, deaths, settings):
 
 
 def pick_clips(events, settings, duration):
+    events.clip_notes = []
+    note = lambda c, why: events.clip_notes.append(  # noqa: E731
+        f"{fmt_time(c.takedowns[0] if c.takedowns else c.focus)}  {', '.join(c.reasons[:1])}: {why}")
     cands = [_fit_length(c, settings, duration) for c in _candidates(events, settings, duration)]
     if settings.exclude_deaths:
-        cands = [c for c in (_handle_deaths(c, events.deaths, settings) for c in cands) if c]
+        kept = []
+        for c in cands:
+            handled = _handle_deaths(c, events.deaths, settings)
+            if handled:
+                kept.append(handled)
+            else:
+                note(c, "dropped - you die right at the start ('Skip moments where I die' is on)")
+        cands = kept
     cands.sort(key=lambda c: c.score, reverse=True)
     chosen = []
     for c in cands:
+        if settings.num_clips and len(chosen) >= settings.num_clips:
+            note(c, f"not picked - you asked for {settings.num_clips} clips and higher-scoring ones filled them "
+                    f"(score {c.score:.0f}; tick 'All highlights' to get every kill)")
+            continue
         if all(c.end + 1 <= o.start or c.start >= o.end + 1 for o in chosen):
             chosen.append(c)
-        if settings.num_clips and len(chosen) >= settings.num_clips:
-            break
+        else:
+            note(c, "already inside another clip")
     chosen.sort(key=lambda c: c.start)
     for c in chosen:
         c.score = round(c.score, 1)

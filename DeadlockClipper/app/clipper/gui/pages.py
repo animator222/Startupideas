@@ -644,6 +644,11 @@ class ReviewPage(QWidget):
         pick.addWidget(sel_none)
         pick.addWidget(label("Only ticked clips are exported.", "subtle"))
         pick.addStretch(1)
+        why = button("Why these clips?")
+        why.setToolTip("Report of every kill/assist badge seen, whether it counted, and why a kill did or "
+                       "didn't become a clip (logs\\last_analysis.txt)")
+        why.clicked.connect(self._open_report)
+        pick.addWidget(why)
         seen = button("See what was detected")
         seen.setToolTip("A picture of every moment that looked like your kill badge (logs\\detections.jpg)")
         seen.clicked.connect(self._open_detections)
@@ -704,6 +709,11 @@ class ReviewPage(QWidget):
         row.setParent(None)
         row.deleteLater()
         self._update_export()
+
+    def _open_report(self):
+        from ..paths import ANALYSIS_REPORT
+        if ANALYSIS_REPORT.exists():
+            open_in_explorer(ANALYSIS_REPORT)
 
     def _open_detections(self):
         from ..analysis import DETECTIONS_IMAGE
