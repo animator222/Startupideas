@@ -179,6 +179,7 @@ class FormatOption(QFrame):
 class SettingsPage(QWidget):
     start = Signal(object)  # Settings
     back = Signal()
+    zoom_changed = Signal(float)  # new zoom level: the zoom preview needs re-making
 
     def __init__(self):
         super().__init__()
@@ -258,12 +259,25 @@ class SettingsPage(QWidget):
         right.addWidget(label("Format (click one):"))
         opts = QHBoxLayout()
         self.opt_blur = FormatOption("Full frame + blurred background", "Shows the whole picture.")
-        self.opt_crop = FormatOption("Crop to fill", "Fills the screen, cuts off the edges.")
+        self.opt_zoom = FormatOption("Zoomed gameplay + blurred background",
+                                     "Gameplay is bigger; its edges are cut off.")
         group = QButtonGroup(self)
-        group.addButton(self.opt_blur.radio); group.addButton(self.opt_crop.radio)
-        opts.addWidget(self.opt_blur); opts.addWidget(self.opt_crop)
+        group.addButton(self.opt_blur.radio); group.addButton(self.opt_zoom.radio)
+        opts.addWidget(self.opt_blur); opts.addWidget(self.opt_zoom)
         right.addLayout(opts)
-        self.same_shape_lbl = label("Your video already has this shape, so it's just resized.", "subtle", wrap=True)
+        zoom_row = QHBoxLayout()
+        zoom_row.addWidget(label("Zoom"))
+        self.zoom = QSlider(Qt.Horizontal)
+        self.zoom.setRange(110, 250)
+        self.zoom.setSingleStep(5)
+        self.zoom_lbl = label("", "subtle")
+        self.zoom.valueChanged.connect(lambda v: self.zoom_lbl.setText(f"{v}%"))
+        self.zoom.sliderReleased.connect(lambda: self.zoom_changed.emit(self.zoom.value() / 100))
+        zoom_row.addWidget(self.zoom, 1)
+        zoom_row.addWidget(self.zoom_lbl)
+        right.addLayout(zoom_row)
+        self.same_shape_lbl = label("Your video already has this shape: full frame is just resized, "
+                                    "zoom cuts in on the middle.", "subtle", wrap=True)
         right.addWidget(self.same_shape_lbl)
 
         right.addSpacing(8)
@@ -302,7 +316,8 @@ class SettingsPage(QWidget):
         self.sens.setValue(settings.sensitivity)
         self.full.setChecked(settings.quick_scan)
         self.out_dir.setText(settings.output_dir)
-        (self.opt_crop if settings.vertical_format == "crop" else self.opt_blur).radio.setChecked(True)
+        (self.opt_zoom if settings.vertical_format == "zoom" else self.opt_blur).radio.setChecked(True)
+        self.zoom.setValue(int(round(settings.zoom_level * 100)))
         self._info = info
         self._previews = {}
         (self.out_horizontal if settings.output_orientation == "horizontal" else self.out_vertical).setChecked(True)
@@ -314,7 +329,7 @@ class SettingsPage(QWidget):
 
     def _orientation_changed(self, *_):
         o = self._orientation()
-        for opt in (self.opt_blur, self.opt_crop):
+        for opt in (self.opt_blur, self.opt_zoom):
             opt.set_shape(o)
         info = getattr(self, "_info", None)
         same = info is not None and (info.height > info.width) == (o == "vertical") and \
@@ -323,14 +338,14 @@ class SettingsPage(QWidget):
         self._show_previews()
 
     def set_previews(self, paths):
-        self._previews = paths
+        self._previews.update(paths)
         self._show_previews()
 
     def _show_previews(self):
         o = self._orientation()
         if (o, "blur") in self._previews:
             self.opt_blur.set_image(self._previews[(o, "blur")])
-            self.opt_crop.set_image(self._previews[(o, "crop")])
+            self.opt_zoom.set_image(self._previews[(o, "zoom")])
 
     def _update_badge_label(self):
         info = self._info
@@ -366,7 +381,8 @@ class SettingsPage(QWidget):
         return replace(
             self._settings,
             num_clips=0 if self.all.isChecked() else self.num.value(), min_len=self.min_len.value(), max_len=self.max_len.value(),
-            vertical_format="crop" if self.opt_crop.radio.isChecked() else "blur",
+            vertical_format="zoom" if self.opt_zoom.radio.isChecked() else "blur",
+            zoom_level=self.zoom.value() / 100,
             output_orientation=self._orientation(),
             want_kills=self.kills.isChecked(), want_multikills=self.multi.isChecked(),
             want_teamfights=self.fights.isChecked(), want_loud_only=self.loud_only.isChecked(),
@@ -539,7 +555,8 @@ class ClipRow(QFrame):
         c = self.clip
         self.title.setText(f"Clip {self.index}   {fmt_time(c.start)} \u2192 {fmt_time(c.end)}"
                            f"   \u2022   {c.length:.1f}s   \u2022   score {c.score:g}")
-        fmt = {"crop": "Crop to fill", "blur": "Blurred background"}.get(c.fmt, "")
+        fmt = {"zoom": "Zoomed" + (f" {round(c.zoom * 100)}%" if c.zoom else ""),
+               "blur": "Full frame"}.get(c.fmt, "")
         self.detail.setText(f"Edited \u2022 {fmt}" if fmt else "")
 
     def valid(self):

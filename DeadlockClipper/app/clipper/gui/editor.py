@@ -8,7 +8,7 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QGraphicsVideoItem
 from PySide6.QtWidgets import (
     QButtonGroup, QDialog, QGraphicsObject, QGraphicsScene, QGraphicsView, QHBoxLayout, QPushButton, QRadioButton,
-    QSizePolicy, QVBoxLayout, QWidget,
+    QSizePolicy, QSlider, QVBoxLayout, QWidget,
 )
 
 from ..ffmpeg import ffmpeg_path, run
@@ -32,31 +32,32 @@ def fmt_precise(t):
 # ---------------------------------------------------------------- crop box over the video
 
 class CropOverlay(QGraphicsObject):
-    """Shows which part of the frame "crop to fill" keeps. Drag it along the axis that gets cut."""
-    moved = Signal(float)
+    """With zoom, shows which part of the frame stays in view. Drag it to move that part."""
+    moved = Signal(float, float)
 
     def __init__(self):
         super().__init__()
         self.size = QSizeF(16, 9)
-        self.aspect = 9 / 16  # output width / height
-        self.crop_x = 0.5
+        self.out_size = (1080, 1920)  # output width, height
+        self.zoom = 1.4
+        self.crop_x = self.crop_y = 0.5
         self._drag = None
         self.setCursor(Qt.SizeAllCursor)
 
     def boundingRect(self):
         return QRectF(QPointF(0, 0), self.size)
 
-    def _free(self):
-        """(free pixels along x, free pixels along y) - only one of them is non-zero."""
+    def _visible(self):
+        """Size of the part of the source frame that stays in view (source pixels)."""
         w, h = self.size.width(), self.size.height()
-        if w / h > self.aspect:
-            return w - h * self.aspect, 0.0
-        return 0.0, h - w / self.aspect
+        ow, oh = self.out_size
+        scale = min(ow / w, oh / h) * max(1.0, self.zoom)
+        return min(w, ow / scale), min(h, oh / scale)
 
     def box(self):
         w, h = self.size.width(), self.size.height()
-        fx, fy = self._free()
-        return QRectF(fx * self.crop_x, fy * self.crop_x, w - fx, h - fy)
+        vw, vh = self._visible()
+        return QRectF((w - vw) * self.crop_x, (h - vh) * self.crop_y, vw, vh)
 
     def paint(self, p, *_):
         b = self.box()
@@ -70,20 +71,20 @@ class CropOverlay(QGraphicsObject):
         p.drawRect(b)
 
     def mousePressEvent(self, e):
-        self._drag = (e.pos(), self.crop_x)
+        self._drag = (e.pos(), self.crop_x, self.crop_y)
 
     def mouseMoveEvent(self, e):
         if self._drag is None:
             return
-        fx, fy = self._free()
-        p0, c0 = self._drag
+        p0, cx0, cy0 = self._drag
+        vw, vh = self._visible()
+        fx, fy = self.size.width() - vw, self.size.height() - vh
         if fx > 1:
-            self.crop_x = c0 + (e.pos().x() - p0.x()) / fx
-        elif fy > 1:
-            self.crop_x = c0 + (e.pos().y() - p0.y()) / fy
-        self.crop_x = min(1.0, max(0.0, self.crop_x))
+            self.crop_x = min(1.0, max(0.0, cx0 + (e.pos().x() - p0.x()) / fx))
+        if fy > 1:
+            self.crop_y = min(1.0, max(0.0, cy0 + (e.pos().y() - p0.y()) / fy))
         self.update()
-        self.moved.emit(self.crop_x)
+        self.moved.emit(self.crop_x, self.crop_y)
 
     def mouseReleaseEvent(self, e):
         self._drag = None
@@ -337,14 +338,21 @@ class EditorDialog(QDialog):
         fmt_row = QHBoxLayout()
         fmt_row.addWidget(label("Format for this clip:"))
         self.fmt_blur = QRadioButton("Full frame + blurred background")
-        self.fmt_crop = QRadioButton("Crop to fill")
+        self.fmt_zoom = QRadioButton("Zoomed gameplay + blurred background")
         group = QButtonGroup(self)
         group.addButton(self.fmt_blur)
-        group.addButton(self.fmt_crop)
+        group.addButton(self.fmt_zoom)
         self.fmt_blur.toggled.connect(self._fmt_changed)
         fmt_row.addWidget(self.fmt_blur)
-        fmt_row.addWidget(self.fmt_crop)
-        self.crop_hint = label("Drag the box on the video to choose what part is shown.", "subtle")
+        fmt_row.addWidget(self.fmt_zoom)
+        self.zoom = QSlider(Qt.Horizontal)
+        self.zoom.setRange(110, 250)
+        self.zoom.setFixedWidth(160)
+        self.zoom_lbl = label("", "subtle")
+        self.zoom.valueChanged.connect(self._zoom_changed)
+        fmt_row.addWidget(self.zoom)
+        fmt_row.addWidget(self.zoom_lbl)
+        self.crop_hint = label("Drag the box on the video to choose what stays in view.", "subtle")
         fmt_row.addWidget(self.crop_hint)
         fmt_row.addStretch(1)
         lay.addLayout(fmt_row)
@@ -362,7 +370,7 @@ class EditorDialog(QDialog):
         lay.addLayout(nav)
 
         # Keep keyboard focus off buttons so Space/arrows always control the video.
-        for wdg in self.findChildren(QPushButton) + [self.fmt_blur, self.fmt_crop]:
+        for wdg in self.findChildren(QPushButton) + [self.fmt_blur, self.fmt_zoom, self.zoom]:
             wdg.setFocusPolicy(Qt.NoFocus)
         self.setFocusPolicy(Qt.StrongFocus)
 
@@ -377,21 +385,19 @@ class EditorDialog(QDialog):
 
     # ------------------------------------------------------------ open / close
 
-    def open(self, info, clip, index, default_fmt, orientation="vertical"):
+    def open(self, info, clip, index, default_fmt, orientation="vertical", default_zoom=1.4):
         self.info, self.clip = info, clip
         self.s0, self.s1 = clip.start, clip.end
         self.title.setText(f"Edit clip {index}")
         self.setWindowTitle(f"Edit clip {index} - close this window to cancel")
         self.reasons.setText(" • ".join(clip.reasons))
         self.view.set_frame_size(info.width, info.height)
-        self.view.overlay.crop_x = clip.crop_x
-        self.view.overlay.aspect = 16 / 9 if orientation == "horizontal" else 9 / 16
-        fx, fy = self.view.overlay._free()
-        self.same_shape = fx < 2 and fy < 2  # input already has the output's shape
-        self.fmt_blur.setEnabled(not self.same_shape)
-        self.fmt_crop.setEnabled(not self.same_shape)
+        overlay = self.view.overlay
+        overlay.crop_x, overlay.crop_y = clip.crop_x, clip.crop_y
+        overlay.out_size = (1920, 1080) if orientation == "horizontal" else (1080, 1920)
+        self.zoom.setValue(int(round((clip.zoom or default_zoom) * 100)))
         fmt = clip.fmt or default_fmt
-        (self.fmt_crop if fmt == "crop" else self.fmt_blur).setChecked(True)
+        (self.fmt_zoom if fmt == "zoom" else self.fmt_blur).setChecked(True)
         self._fmt_changed()
         pad = max(20.0, (clip.end - clip.start) * 0.6)
         self._set_view(max(0.0, clip.start - pad), min(info.duration, clip.end + pad))
@@ -417,12 +423,14 @@ class EditorDialog(QDialog):
 
     def _save(self):
         self.clip.start, self.clip.end = round(self.s0, 2), round(self.s1, 2)
-        self.clip.fmt = "crop" if self.fmt_crop.isChecked() else "blur"
+        self.clip.fmt = "zoom" if self.fmt_zoom.isChecked() else "blur"
+        self.clip.zoom = self.zoom.value() / 100 if self.clip.fmt == "zoom" else 0.0
         self.clip.crop_x = self.view.overlay.crop_x
+        self.clip.crop_y = self.view.overlay.crop_y
         if not self.clip.start <= self.clip.focus <= self.clip.end:
             self.clip.focus = (self.clip.start + self.clip.end) / 2
-        log.info("Clip edited: %.2f-%.2f fmt=%s crop_x=%.2f", self.clip.start, self.clip.end,
-                 self.clip.fmt, self.clip.crop_x)
+        log.info("Clip edited: %.2f-%.2f fmt=%s zoom=%.2f pos=%.2f,%.2f", self.clip.start, self.clip.end,
+                 self.clip.fmt, self.clip.zoom, self.clip.crop_x, self.clip.crop_y)
         self.saved.emit(self.clip)
         self.accept()
 
@@ -516,9 +524,14 @@ class EditorDialog(QDialog):
         self._set_view(max(0.0, v0 - 30), min(self.info.duration, v1 + 30))
 
     def _fmt_changed(self):
-        crop = self.fmt_crop.isChecked() and not getattr(self, "same_shape", False)
-        self.view.overlay.setVisible(crop)
-        self.crop_hint.setVisible(crop)
+        zoomed = self.fmt_zoom.isChecked()
+        for wdg in (self.view.overlay, self.crop_hint, self.zoom, self.zoom_lbl):
+            wdg.setVisible(zoomed)
+
+    def _zoom_changed(self, value):
+        self.zoom_lbl.setText(f"{value}%")
+        self.view.overlay.zoom = value / 100
+        self.view.overlay.update()
 
     # ------------------------------------------------------------ filmstrip
 

@@ -13,27 +13,27 @@ log = logging.getLogger(__name__)
 OUTPUT_SIZES = {"vertical": (1080, 1920), "horizontal": (1920, 1080)}
 
 
-def vertical_filter(fmt, fps_str=None, crop_x=0.5, orientation="vertical"):
+def vertical_filter(fmt, fps_str=None, pan_x=0.5, orientation="vertical", zoom=1.0, pan_y=0.5):
     """ffmpeg filter graph from input 0 to [v], for any input shape.
 
     orientation: 'vertical' (1080x1920) or 'horizontal' (1920x1080) output.
-    fmt 'crop': crop to fill the output; crop_x picks the position along the axis that gets
-    cut (0 = left/top, 1 = right/bottom). fmt 'blur': whole frame, blurred copy fills the rest.
-    If the input already has the output's shape, both simply scale it.
+    fmt 'blur': the whole frame, with a blurred, darkened copy filling the empty space.
+    fmt 'zoom': the same, but the gameplay is enlarged by `zoom` (e.g. 1.4 = 140%); whatever
+    no longer fits is cut off. pan_x / pan_y pick which part stays in view (0 = left/top,
+    0.5 = middle, 1 = right/bottom).
     """
     ow, oh = OUTPUT_SIZES.get(orientation, OUTPUT_SIZES["vertical"])
-    aspect = ow / oh
+    z = max(1.0, zoom) if fmt == "zoom" else 1.0
+    px, py = (min(1.0, max(0.0, p)) for p in (pan_x, pan_y))
+    fit = f"min({ow}/iw\\,{oh}/ih)*{z:.4f}"
     tail = (f",fps={fps_str}" if fps_str else "") + ",format=yuv420p[v]"
-    if fmt == "crop":
-        p = min(1.0, max(0.0, crop_x))
-        return (f"[0:v:0]crop=w='trunc(min(iw,ih*{aspect:.6f})/2)*2':h='trunc(min(ih,iw/{aspect:.6f})/2)*2'"
-                f":x='(iw-ow)*{p:.4f}':y='(ih-oh)*{p:.4f}',"
-                f"scale={ow}:{oh}:flags=lanczos,setsar=1" + tail)
     bw, bh = ow // 4, oh // 4  # blur at low resolution: much faster, looks the same
     return (f"[0:v:0]split=2[bgsrc][fgsrc];"
             f"[bgsrc]scale={bw}:{bh}:force_original_aspect_ratio=increase,crop={bw}:{bh},"
             f"boxblur=10:2,eq=brightness=-0.06,scale={ow}:{oh},setsar=1[bg];"
-            f"[fgsrc]scale={ow}:{oh}:force_original_aspect_ratio=decrease:flags=lanczos,setsar=1[fg];"
+            f"[fgsrc]scale=w='trunc(iw*{fit}/2)*2':h='trunc(ih*{fit}/2)*2':flags=lanczos,"
+            f"crop=w='min(iw\\,{ow})':h='min(ih\\,{oh})':x='(iw-ow)*{px:.4f}':y='(ih-oh)*{py:.4f}',"
+            f"setsar=1[fg];"
             f"[bg][fg]overlay=(W-w)/2:(H-h)/2" + tail)
 
 
@@ -54,15 +54,17 @@ def output_paths(source, out_dir, count):
     return [out_dir / f"deadlock_{date}_clip{first + i:02d}.mp4" for i in range(count)]
 
 
-def _encode(info, clip, fmt, orientation, out_path, encoder, progress, cancel, gpu_decode):
+def _encode(info, clip, fmt, zoom, orientation, out_path, encoder, progress, cancel, gpu_decode):
     fmt = clip.fmt or fmt
+    zoom = (clip.zoom or zoom) if fmt == "zoom" else 1.0
     duration = clip.end - clip.start
     cmd = [ffmpeg_path(), "-hide_banner", "-nostdin", "-v", "error", "-y",
            "-progress", "pipe:1", "-nostats"]
     if gpu_decode:
         cmd += gpu_decode_args(info)
     cmd += ["-ss", f"{clip.start:.3f}", "-i", info.path, "-t", f"{duration:.3f}",
-           "-filter_complex", vertical_filter(fmt, info.fps_str, clip.crop_x, orientation), "-map", "[v]"]
+           "-filter_complex", vertical_filter(fmt, info.fps_str, clip.crop_x, orientation, zoom, clip.crop_y),
+            "-map", "[v]"]
     if info.has_audio:
         cmd += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"]
     cmd += [*ENCODER_ARGS[encoder], "-pix_fmt", "yuv420p", "-map_metadata", "-1",
@@ -112,12 +114,12 @@ def export_clips(info, clips, settings, progress, cancel):
         clip_progress(0)
         last_err = ""
         for encoder in list(encoders):
-            ok, last_err = _encode(info, clip, settings.vertical_format, settings.output_orientation, path,
+            ok, last_err = _encode(info, clip, settings.vertical_format, settings.zoom_level, settings.output_orientation, path,
                                    encoder, clip_progress, cancel, gpu_decode)
             if not ok and gpu_decode:
                 log.warning("Export with GPU decoding failed; decoding on the CPU from now on")
                 gpu_decode = False
-                ok, last_err = _encode(info, clip, settings.vertical_format, settings.output_orientation,
+                ok, last_err = _encode(info, clip, settings.vertical_format, settings.zoom_level, settings.output_orientation,
                                        path, encoder, clip_progress, cancel, gpu_decode)
             if ok:
                 log.info("Wrote %s with %s", path, encoder)

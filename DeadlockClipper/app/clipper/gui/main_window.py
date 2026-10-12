@@ -43,6 +43,7 @@ class MainWindow(QMainWindow):
         self.home.url_chosen.connect(self.open_url)
         self.setup.back.connect(lambda: self.stack.setCurrentWidget(self.home))
         self.setup.start.connect(self.run_analysis)
+        self.setup.zoom_changed.connect(lambda z: self._make_previews(("zoom",), z))
         self.progress.cancel.connect(self._cancel)
         self.review.repick.connect(self.repick)
         self.review.edit.connect(self.edit_clip)
@@ -95,19 +96,29 @@ class MainWindow(QMainWindow):
     def show_settings(self):
         self.setup.load(self.settings, self.info)
         self.stack.setCurrentWidget(self.setup)
+
+        self._make_previews(("blur", "zoom"), self.settings.zoom_level)
+
+    def _make_previews(self, formats, zoom):
         info = self.info
+        self._preview_job = getattr(self, "_preview_job", 0) + 1
+        job = self._preview_job
 
         def previews(progress, cancel):
             t = min(info.duration * 0.4, max(0.0, info.duration - 1))
             out = {}
             for orientation in ("vertical", "horizontal"):
-                for fmt in ("blur", "crop"):
+                for fmt in formats:
                     out[(orientation, fmt)] = extract_frame(
-                        info.path, t, CACHE_DIR / f"preview_{orientation}_{fmt}.png",
-                        filter_complex=vertical_filter(fmt, orientation=orientation))
+                        info.path, t, CACHE_DIR / f"preview_{orientation}_{fmt}_{job}.png",
+                        filter_complex=vertical_filter(fmt, orientation=orientation, zoom=zoom))
             return out
 
-        start_task(self, previews, on_done=self.setup.set_previews,
+        def done(paths):
+            if job == self._preview_job:
+                self.setup.set_previews(paths)
+
+        start_task(self, previews, on_done=done,
                    on_failed=lambda m, d: log.warning("Preview failed: %s %s", m, d))
 
     # ------------------------------------------------------------ analysis
@@ -161,7 +172,7 @@ class MainWindow(QMainWindow):
     def edit_clip(self, row):
         self._editing = row
         self.editor.open(self.info, row.clip, row.index, self.settings.vertical_format,
-                         self.settings.output_orientation)
+                         self.settings.output_orientation, self.settings.zoom_level)
         self.editor.show()
         self.editor.raise_()
 

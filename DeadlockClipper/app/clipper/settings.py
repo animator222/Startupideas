@@ -12,7 +12,8 @@ class Settings:
     num_clips: int = 5  # 0 = find all highlights (no limit)
     min_len: int = 15
     max_len: int = 45
-    vertical_format: str = "blur"  # "blur" (full frame + blurred background) or "crop" (crop to fill)
+    vertical_format: str = "blur"  # "blur" (full frame) or "zoom" (zoomed gameplay), both on a blurred background
+    zoom_level: float = 1.4  # how much "zoom" enlarges the gameplay (1.4 = 140%)
     output_orientation: str = "vertical"  # "vertical" 1080x1920 or "horizontal" 1920x1080
     badge_region_landscape: list = None  # kill badge search area for horizontal videos (x, y, w, h)
     badge_region_portrait: list = None  # ... and for vertical videos
@@ -37,8 +38,14 @@ class Settings:
         self.max_len = max(5, min(60, int(self.max_len)))
         self.min_len = max(5, min(self.max_len, int(self.min_len)))
         self.sensitivity = max(1, min(10, int(self.sensitivity)))
-        if self.vertical_format not in ("blur", "crop"):
+        if self.vertical_format == "crop":  # "crop to fill" was replaced by zoom
+            self.vertical_format = "zoom"
+        if self.vertical_format not in ("blur", "zoom"):
             self.vertical_format = "blur"
+        try:
+            self.zoom_level = round(max(1.1, min(2.5, float(self.zoom_level))), 2)
+        except (TypeError, ValueError):
+            self.zoom_level = 1.4
         if self.output_orientation not in ("vertical", "horizontal"):
             self.output_orientation = "vertical"
         for name in ("badge_region_landscape", "badge_region_portrait"):

@@ -26,7 +26,8 @@ top-right of the start screen. If something is broken, run `Install.bat` again t
    a YouTube link (local files are better quality and faster).
 2. **Settings.** Choose how many clips (or tick **All highlights** for no limit), how long,
    **Export as** vertical (Shorts/Reels) or horizontal (YouTube), the format (click the preview
-   you like), and what counts as a highlight. Your choices are remembered for next time.
+   you like): **full frame** or **zoomed gameplay**, both on a blurred background, with a
+   **Zoom** slider (110-250%) - and what counts as a highlight. Your choices are remembered for next time.
    - **Kill badge area:** the app needs to know where your red KILL badge appears on screen. It
      has defaults for normal horizontal recordings and for your vertical layout. If kills are
      missed, press **Set kill badge area...**, find a moment with a kill, draw a box around the
@@ -43,8 +44,8 @@ top-right of the start screen. If something is broken, run `Install.bat` again t
        to trim, or click anywhere on the timeline to jump there.
      - **Set start here (I)** / **Set end here (O)** trim to the current playback position.
      - **Play clip** plays just the trimmed part. **Show more timeline** lets you extend further.
-     - Choose **blurred background** or **crop to fill** for each clip. With crop to fill, drag
-       the box on the video to choose which part of the picture is kept.
+     - Choose **full frame** or **zoomed gameplay** for each clip, with its own zoom slider. When
+       zoomed, a box on the video shows what stays in view - drag it to choose that part.
      - Keyboard: Space = play/pause, arrow keys = 1 second, Shift+arrows = one frame.
    - Tick the clips you want to export (**Select all** / **Select none** help). Only ticked clips
      are exported. **Delete** removes a clip from the list.
